@@ -57,9 +57,16 @@ def test_semantic_embedding_does_not_depend_on_batch_composition():
 
 
 def test_age_gender_model_contract():
-    session = get_session("age_gender")
-    out = session.run(None, {session.get_inputs()[0].name: np.zeros((6, 3, 224, 224), np.float32)})[0]
-    assert out.shape == (6, 2)  # [age in years, P(female)] per view
+    session = get_session("mivolo")
+    head = session.run(["head"], {session.get_inputs()[0].name: np.zeros((1, 6, 384, 384), np.float32)})[0]
+    assert head.shape == (1, 3)  # [male logit, female logit, raw age]
+
+
+def test_scrfd_outputs_the_expected_nine_tensors():
+    session = get_session("scrfd")
+    size = 640
+    outputs = session.run(None, {session.get_inputs()[0].name: np.zeros((1, 3, size, size), np.float32)})
+    assert [o.shape[0] for o in outputs] == [12800, 3200, 800] * 3
 
 
 def test_label_bank_matches_the_vision_model_dimension():

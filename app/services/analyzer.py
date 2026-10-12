@@ -25,7 +25,7 @@ from app.services.classifier_service import (
     VERDICT_UNAVAILABLE,
     classify_boxes,
     classify_image_type,
-    detect_non_human_entities,
+    detect_entities_and_persons,
 )
 from app.services.face_service import (
     NOT_AVAILABLE,
@@ -70,6 +70,7 @@ class FaceCensus:
     """Everything found in the image, grouped by what each detection was verified to be."""
 
     humans: list[tuple[DetectedFace, dict[str, Any]]] = field(default_factory=list)
+    persons: list[list[int]] = field(default_factory=list)
     others: list[dict[str, Any]] = field(default_factory=list)
     unsure: list[dict[str, Any]] = field(default_factory=list)
     rejected: int = 0
@@ -237,10 +238,11 @@ def _merge_entities(image_bgr: np.ndarray, census: FaceCensus, entities: list[di
 def census_faces(image_bgr: np.ndarray) -> FaceCensus:
     """Detect all face-like regions and classify each one."""
     census = FaceCensus()
-    faces, face_model = detect_faces(image_bgr)
-    entities, entity_models = detect_non_human_entities(image_bgr)
-    census.detection_ran = face_model is not None
-    census.models = [m for m in (face_model, *entity_models) if m]
+    faces, face_models = detect_faces(image_bgr)
+    entities, persons, entity_models = detect_entities_and_persons(image_bgr)
+    census.detection_ran = bool(face_models)
+    census.persons = persons
+    census.models = [*face_models, *entity_models]
 
     _classify_face_candidates(image_bgr, census, faces)
     _merge_entities(image_bgr, census, entities)
@@ -254,8 +256,24 @@ def census_faces(image_bgr: np.ndarray) -> FaceCensus:
     return census
 
 
+def _match_body(face_box: list[int], persons: list[list[int]]) -> list[int] | None:
+    """
+    The person box that contains this face and shows a real body (much taller than the face).
+
+    Person boxes that are about as tall as the face (a head-and-shoulders crop, a head-only image) carry no extra
+    information for the age model and are ignored. The tightest qualifying box is used.
+    """
+    face_height = face_box[3] - face_box[1]
+    candidates = [
+        box
+        for box in persons
+        if box_center_inside(face_box, box) and (box[3] - box[1]) >= settings.BODY_MIN_HEIGHT_RATIO * face_height
+    ]
+    return min(candidates, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])) if candidates else None
+
+
 def _build_human_items(
-    image_bgr: np.ndarray, humans: list[tuple[DetectedFace, dict[str, Any]]]
+    image_bgr: np.ndarray, humans: list[tuple[DetectedFace, dict[str, Any]]], persons: list[list[int]]
 ) -> tuple[list[dict[str, Any]], str | None]:
     height, width = image_bgr.shape[:2]
     items: list[dict[str, Any]] = []
@@ -265,7 +283,11 @@ def _build_human_items(
         box = list(clamp_box(face.bbox, width, height))
         quality = assess_face_quality(image_bgr, box, face.kps)
         demo = predict_face_demographics(
-            image_bgr, box, usable=quality["demographics_usable"], caveat=quality["demographics_caveat"]
+            image_bgr,
+            box,
+            usable=quality["demographics_usable"],
+            caveat=quality["demographics_caveat"],
+            body_box=_match_body(box, persons),
         )
         demographics_model = demo.model or demographics_model
         minor_risk = demo.p_under_18 is not None and demo.p_under_18 >= settings.MINOR_RISK_PROBABILITY
@@ -598,7 +620,7 @@ def analyze_profile_photo_image(
     image_type = classify_image_type(bgr)
     census = census_faces(bgr)
 
-    humans, demographics_model = _build_human_items(bgr, census.humans)
+    humans, demographics_model = _build_human_items(bgr, census.humans, census.persons)
     others = _number_boxes(census.others, width, height)
     unsure = _number_boxes(census.unsure, width, height)
     accepted, status, reason = _decide(humans, others, unsure, image_type)

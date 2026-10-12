@@ -7,35 +7,31 @@ documentation, not legal advice: have counsel review it before any commercial de
 
 | Component | Source | Licence as stated by the source | Notes |
 | :--- | :--- | :--- | :--- |
-| YuNet 2023mar | OpenCV Zoo (`opencv/face_detection_yunet`) | MIT (OpenCV Zoo model folder) | Confirm against the zoo's LICENSE file when you vendor it. |
-| YOLOX-S | Megvii-BaseDetection/YOLOX release 0.1.1rc0 | Apache-2.0 | Replaces Ultralytics YOLOv8n, whose AGPL-3.0 terms are unsuitable for closed-source commercial use. |
-| Anime face detector v1.4n | `deepghs/anime_face_detection` | MIT (model card) | Trained with Ultralytics YOLOv8 tooling; the model card says MIT, but the provenance of the weights should be reviewed. |
+| SCRFD-10G | InsightFace `buffalo_l` pack (`det_10g.onnx`) | InsightFace code is MIT, but its **pretrained models are published for non-commercial research only** | Chosen for accuracy at the project owner's instruction to ignore licences. Commercial use needs a licence from InsightFace. |
+| MiVOLO v2 | [`iitolstykh/mivolo_v2`](https://hf.co/iitolstykh/mivolo_v2), ONNX export by `Sam-Apostel/mivolo-v2-age-onnx`, gender head exposed by `scripts/build_models.py` | Apache-2.0 (model card and repository) | The card says it was trained on "proprietary and open-source datasets" without listing them; earlier MiVOLO checkpoints used IMDB-WIKI and UTKFace, which are research-only. The community ONNX export is third-party with no usage history. |
+| YuNet 2023mar | OpenCV Zoo | MIT (OpenCV Zoo model folder) | Trained on WIDER FACE, which a Hugging Face mirror lists as CC BY-NC-ND 4.0; the same question applies to every WIDER-trained detector, including SCRFD. |
+| YOLOX-S | Megvii-BaseDetection/YOLOX release 0.1.1rc0 | Apache-2.0 | |
+| Anime face detector v1.4n | `deepghs/anime_face_detection` | MIT (model card) | Trained with Ultralytics YOLOv8 tooling; review the provenance of the weights. |
 | SigLIP2 Base/16-224 | Google, ONNX export by `onnx-community/siglip2-base-patch16-224-ONNX` | Apache-2.0 | Only the vision tower runs at inference; the text tower is used once, offline, to pre-compute prompt embeddings. |
-| Age + gender ViT | `abhilash88/age-gender-prediction` via `onnx-community/age-gender-prediction-ONNX` | Apache-2.0 (model card) | **Training data is UTKFace.** See below. INT8 quantisation is done locally by `scripts/build_models.py`. |
 
 Upstream files used by `scripts/build_models.py` are pinned by SHA-256 in that script; every built file is recorded in
 `models/manifest.json` and re-verified when loaded. YuNet, YOLOX and the anime detector are pinned in
 `app/services/model_manager.py`.
 
-## Replaced components (do not reintroduce without a licence)
+## Licence position of this build
 
-* **InsightFace `buffalo_l` / `genderage.onnx`** - InsightFace states its pretrained models are for non-commercial
-  research and directs commercial users to a licensing contact. The previous version of this project used it (downloaded
-  from a third-party mirror). It has been removed.
-* **Ultralytics YOLOv8n** - AGPL-3.0. Replaced by YOLOX-S.
-* **OpenAI CLIP ViT-B/32 via `transformers`** (about 600 MB in full) - replaced by the SigLIP2 vision tower.
+The previous revision avoided non-commercial weights. This revision uses the strongest models found regardless of
+licence, so **it is not cleared for commercial deployment**. To make it so, any of the following works:
 
-## Open licensing risk: the age/gender model
+1. Obtain a commercial licence from InsightFace for the SCRFD weights, or switch the primary detector back to YuNet
+   (MIT), accepting lower recall on small and profile faces.
+2. Obtain written clarification of the MiVOLO v2 training data from its authors.
+3. Have counsel review the dataset terms behind every model (WIDER FACE, UTKFace, IMDB-WIKI, LAION, FairFace).
 
-The model card declares Apache-2.0, but the model was trained on **UTKFace**, which secondary sources list as available
-for non-commercial research only. Whether weights trained on that data may be used commercially is a legal question this
-repository cannot answer. Options, in order of cleanliness:
+## Replaced components
 
-1. Train or fine-tune an age/gender model on data you are licensed to use (FairFace is CC BY 4.0 and permits commercial
-   use; its 9 coarse age bins would need a regression head or interpolation to give 3-year brackets).
-2. Obtain written clearance from the model's author / UTKFace owners.
-3. Run the service without the age/gender model (`models/age_gender_vit_int8.onnx` absent): everything else works and
-   age/gender fields report `Not Detected`.
+* **abhilash88 ViT age/gender** (UTKFace-trained, 345 MB fp32) - replaced by MiVOLO v2.
+* **InsightFace `genderage.onnx`**, **Ultralytics YOLOv8n**, **OpenAI CLIP ViT-B/32 via `transformers`** - replaced earlier.
 
 ## Privacy and fairness
 

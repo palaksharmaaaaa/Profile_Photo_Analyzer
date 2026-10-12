@@ -1,4 +1,4 @@
-"""Face candidate detection (YuNet) and age/gender estimation with explicit uncertainty."""
+"""Face candidate detection (SCRFD-10G + YuNet) and age/gender estimation (MiVOLO v2) with explicit uncertainty."""
 
 import logging
 import math
@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from app.core.config import settings
-from app.services.image_utils import box_iou, clamp_box, crop_square
+from app.services.image_utils import box_iou, clamp_box
 from app.services.model_manager import MODEL_SPECS, get_session, get_yunet_detector, yunet_lock
 
 logger = logging.getLogger(__name__)
@@ -17,13 +17,21 @@ NOT_AVAILABLE = "Not available"
 NOT_DETECTED = "Not Detected"
 UNSURE = "Unsure"
 
+MODEL_NAME_SCRFD = MODEL_SPECS["scrfd"].display_name
 MODEL_NAME_YUNET = MODEL_SPECS["yunet"].display_name
-MODEL_NAME_AGE_GENDER = MODEL_SPECS["age_gender"].display_name
+MODEL_NAME_AGE_GENDER = MODEL_SPECS["mivolo"].display_name
 
+MIN_VISIBLE_FRACTION = 0.25
+SCRFD_STRIDES = (8, 16, 32)
+SCRFD_MIN_SIZE = 640
+SCRFD_MAX_SIZE = 1280
+SCRFD_NMS_IOU = 0.4
+
+MIVOLO_SIZE = 384
+MIVOLO_AGE_SCALE = 122.0  # raw head output -> years: raw * (max_age - min_age) + avg_age
+MIVOLO_AGE_OFFSET = 61.0
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-_AGE_INPUT = 224
-MIN_VISIBLE_FRACTION = 0.25
 
 
 @dataclass
@@ -33,6 +41,7 @@ class DetectedFace:
     bbox: list[int]
     det_score: float
     kps: np.ndarray | None = None
+    source: str = ""
 
 
 @dataclass
@@ -71,6 +80,63 @@ def _group_bounds(group: str) -> tuple[float, float]:
 # --------------------------------------------------------------------------------------
 
 
+def _scrfd_input_size(height: int, width: int) -> int:
+    longest = max(height, width)
+    if longest <= SCRFD_MIN_SIZE:
+        return SCRFD_MIN_SIZE
+    return min(SCRFD_MAX_SIZE, math.ceil(longest / 32) * 32)
+
+
+def _decode_scrfd(outputs: list[np.ndarray], size: int, threshold: float) -> list[tuple[np.ndarray, float, np.ndarray]]:
+    """Decode SCRFD's 9 raw outputs (scores, box distances, landmark offsets for strides 8/16/32, 2 anchors each)."""
+    detections: list[tuple[np.ndarray, float, np.ndarray]] = []
+    for level, stride in enumerate(SCRFD_STRIDES):
+        scores = outputs[level][:, 0]
+        distances = outputs[level + 3] * stride
+        landmarks = outputs[level + 6] * stride
+        cells = size // stride
+        centers = np.stack(np.mgrid[:cells, :cells][::-1], axis=-1).astype(np.float32).reshape(-1, 2) * stride
+        centers = np.stack([centers] * 2, axis=1).reshape(-1, 2)  # two anchors per cell
+        if centers.shape[0] != scores.shape[0]:
+            raise ValueError("Unexpected SCRFD output size")
+        for i in np.flatnonzero(scores >= threshold):
+            cx, cy = centers[i]
+            d = distances[i]
+            box = np.array([cx - d[0], cy - d[1], cx + d[2], cy + d[3]], dtype=np.float32)
+            kps = np.stack([cx + landmarks[i][0::2], cy + landmarks[i][1::2]], axis=-1).astype(np.float32)
+            detections.append((box, float(scores[i]), kps))
+    return detections
+
+
+def _scrfd_pass(image_bgr: np.ndarray) -> list[DetectedFace]:
+    session = get_session("scrfd")
+    if session is None:
+        raise RuntimeError("SCRFD detector unavailable")
+
+    height, width = image_bgr.shape[:2]
+    size = _scrfd_input_size(height, width)
+    ratio = min(size / height, size / width)
+    new_w, new_h = max(1, int(width * ratio)), max(1, int(height * ratio))
+    canvas = np.zeros((size, size, 3), dtype=np.uint8)
+    canvas[:new_h, :new_w] = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    blob = ((canvas[:, :, ::-1].astype(np.float32) - 127.5) / 128.0).transpose(2, 0, 1)[np.newaxis]
+    outputs = session.run(None, {session.get_inputs()[0].name: blob})
+
+    faces: list[DetectedFace] = []
+    for box, score, kps in _decode_scrfd(outputs, size, settings.SCRFD_THRESHOLD):
+        x1, y1, x2, y2 = (float(v) / ratio for v in box)
+        clamped = list(clamp_box([round(x1), round(y1), round(x2), round(y2)], width, height))
+        visible = (clamped[2] - clamped[0]) * (clamped[3] - clamped[1])
+        if (
+            clamped[2] <= clamped[0]
+            or clamped[3] <= clamped[1]
+            or visible < MIN_VISIBLE_FRACTION * (x2 - x1) * (y2 - y1)
+        ):
+            continue
+        faces.append(DetectedFace(bbox=clamped, det_score=round(score, 4), kps=kps / ratio, source=MODEL_NAME_SCRFD))
+    return faces
+
+
 def _yunet_pass(image_bgr: np.ndarray, scale: float) -> list[DetectedFace]:
     """One YuNet pass on the image resized by ``scale``; results are mapped back to image coordinates."""
     height, width = image_bgr.shape[:2]
@@ -93,62 +159,105 @@ def _yunet_pass(image_bgr: np.ndarray, scale: float) -> list[DetectedFace]:
         if box[2] <= box[0] or box[3] <= box[1] or visible_area < MIN_VISIBLE_FRACTION * w * h:
             continue  # off-image or mostly outside the frame: clamping would leave a meaningless sliver
         kps = np.array(row[4:14], dtype=np.float32).reshape(5, 2) / scale
-        faces.append(DetectedFace(bbox=box, det_score=round(float(row[14]), 4), kps=kps))
+        faces.append(DetectedFace(bbox=box, det_score=round(float(row[14]), 4), kps=kps, source=MODEL_NAME_YUNET))
     return faces
 
 
+def _yunet_passes(image_bgr: np.ndarray) -> list[DetectedFace]:
+    scales = [1.0]
+    if max(image_bgr.shape[:2]) < settings.SMALL_IMAGE_UPSCALE_SIDE:
+        scales.append(2.0)  # an extra 2x pass finds small faces in small images
+    return [face for scale in scales for face in _yunet_pass(image_bgr, scale)]
+
+
 def _merge_faces(faces: list[DetectedFace]) -> list[DetectedFace]:
-    """Greedy non-maximum suppression across detection passes."""
+    """
+    Greedy non-maximum suppression across detectors and passes.
+
+    When both detectors find the same face the YuNet box is kept: on 81 real faces the SigLIP2 verifier accepted
+    81/81 YuNet boxes but only 76/81 SCRFD boxes (SCRFD's slightly looser boxes score closer to the threshold).
+    SCRFD still adds every face YuNet misses.
+    """
     kept: list[DetectedFace] = []
-    for face in sorted(faces, key=lambda f: f.det_score, reverse=True):
-        if all(box_iou(face.bbox, other.bbox) <= settings.FACE_NMS_IOU for other in kept):
+    for face in sorted(faces, key=lambda f: (f.source != MODEL_NAME_YUNET, -f.det_score)):
+        if all(box_iou(face.bbox, other.bbox) <= SCRFD_NMS_IOU for other in kept):
             kept.append(face)
     return kept
 
 
-def detect_faces(image_bgr: np.ndarray) -> tuple[list[DetectedFace], str | None]:
+def detect_faces(image_bgr: np.ndarray) -> tuple[list[DetectedFace], list[str]]:
     """
-    Detect face candidates with YuNet (a second 2x pass is added for small images so small faces are found).
+    Detect face candidates with SCRFD-10G and YuNet and merge them (the union raises recall; the verifier
+    later rejects non-faces).
 
-    Returns the candidates and the detector name, or ``None`` as the name when detection could not run.
+    Returns the candidates and the names of the detectors that really ran (empty when none could run).
     """
     if image_bgr is None or image_bgr.size == 0:
-        return [], None
+        return [], []
 
-    scales = [1.0]
-    if max(image_bgr.shape[:2]) < settings.SMALL_IMAGE_UPSCALE_SIDE:
-        scales.append(2.0)
-
-    try:
-        faces = [face for scale in scales for face in _yunet_pass(image_bgr, scale)]
-    except Exception as exc:
-        logger.warning("YuNet detection unavailable: %s", exc)
-        return [], None
-    return _merge_faces(faces), MODEL_NAME_YUNET
+    faces: list[DetectedFace] = []
+    ran: list[str] = []
+    for name, run in ((MODEL_NAME_SCRFD, _scrfd_pass), (MODEL_NAME_YUNET, _yunet_passes)):
+        try:
+            faces.extend(run(image_bgr))
+            ran.append(name)
+        except Exception as exc:
+            logger.warning("%s unavailable: %s", name, exc)
+    return _merge_faces(faces), ran
 
 
 # --------------------------------------------------------------------------------------
-# Age / gender
+# Age / gender (MiVOLO v2)
 # --------------------------------------------------------------------------------------
 
 
-def _prepare_view(crop_bgr: np.ndarray) -> np.ndarray:
-    interp = cv2.INTER_AREA if max(crop_bgr.shape[:2]) > _AGE_INPUT else cv2.INTER_LINEAR
-    resized = cv2.resize(crop_bgr, (_AGE_INPUT, _AGE_INPUT), interpolation=interp)
-    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    return ((rgb - _IMAGENET_MEAN) / _IMAGENET_STD).transpose(2, 0, 1)
+def _crop_rect(image_bgr: np.ndarray, box: list[int] | None, margin: float) -> np.ndarray | None:
+    """Rectangular crop of ``box`` enlarged by ``margin`` on every side and clamped to the image."""
+    if box is None:
+        return None
+    height, width = image_bgr.shape[:2]
+    x1, y1, x2, y2 = (float(v) for v in box[:4])
+    if x2 <= x1 or y2 <= y1:
+        return None
+    pad_x, pad_y = (x2 - x1) * margin, (y2 - y1) * margin
+    left, top = max(0, int(round(x1 - pad_x))), max(0, int(round(y1 - pad_y)))
+    right, bottom = min(width, int(round(x2 + pad_x))), min(height, int(round(y2 + pad_y)))
+    if right <= left or bottom <= top:
+        return None
+    return image_bgr[top:bottom, left:right]
 
 
-def _build_views(image_bgr: np.ndarray, face_box: list[int]) -> np.ndarray | None:
-    """Every configured crop margin, each also mirrored; disagreement between views measures uncertainty."""
+def _letterbox_normalise(crop_bgr: np.ndarray | None) -> np.ndarray:
+    """MiVOLO preprocessing: keep aspect, centre on a black 384 square, RGB, ImageNet-normalise. None -> 'no crop'."""
+    if crop_bgr is None:
+        canvas = np.zeros((MIVOLO_SIZE, MIVOLO_SIZE, 3), dtype=np.uint8)
+    else:
+        height, width = crop_bgr.shape[:2]
+        ratio = MIVOLO_SIZE / max(height, width)
+        new_w, new_h = max(1, round(width * ratio)), max(1, round(height * ratio))
+        interp = cv2.INTER_AREA if ratio < 1 else cv2.INTER_LINEAR
+        resized = cv2.cvtColor(cv2.resize(crop_bgr, (new_w, new_h), interpolation=interp), cv2.COLOR_BGR2RGB)
+        canvas = np.zeros((MIVOLO_SIZE, MIVOLO_SIZE, 3), dtype=np.uint8)
+        top, left = (MIVOLO_SIZE - new_h) // 2, (MIVOLO_SIZE - new_w) // 2
+        canvas[top : top + new_h, left : left + new_w] = resized
+    return ((canvas.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD).transpose(2, 0, 1)
+
+
+def _build_views(image_bgr: np.ndarray, face_box: list[int], body_box: list[int] | None) -> list[np.ndarray]:
+    """One [1, 6, 384, 384] input per configured (margin, mirrored) view: face channels, then body channels."""
+    body = _crop_rect(image_bgr, body_box, 0.0)
     views = []
-    for margin in settings.AGE_CROP_MARGINS:
-        crop = crop_square(image_bgr, face_box, margin)
-        if crop is None or crop.size == 0:
+    for margin, mirrored in settings.AGE_VIEWS:
+        face = _crop_rect(image_bgr, face_box, margin)
+        if face is None:
             continue
-        views.append(_prepare_view(crop))
-        views.append(_prepare_view(cv2.flip(crop, 1)))
-    return np.stack(views).astype(np.float32) if views else None
+        view_body = body
+        if mirrored:
+            face = cv2.flip(face, 1)
+            view_body = None if body is None else cv2.flip(body, 1)
+        stacked = np.concatenate([_letterbox_normalise(face), _letterbox_normalise(view_body)], axis=0)
+        views.append(stacked[np.newaxis].astype(np.float32))
+    return views
 
 
 def _estimate_age(ages: np.ndarray, result: Demographics) -> float:
@@ -183,7 +292,7 @@ def _estimate_gender(female_probs: np.ndarray, mean_age: float, result: Demograp
 
     if mean_age < settings.GENDER_MIN_AGE_YEARS:
         result.gender = UNSURE
-        result.notes.append("Gender is not estimated for apparent children: the model is unreliable below this age.")
+        result.notes.append("Gender is not estimated for apparent children: it cannot be judged reliably at this age.")
     elif len(sides) > 1:
         result.gender = UNSURE
         result.notes.append("Gender views disagree.")
@@ -193,17 +302,27 @@ def _estimate_gender(female_probs: np.ndarray, mean_age: float, result: Demograp
         result.gender = "Female" if mean_female >= 0.5 else "Male"
 
 
+def _parse_head(head: np.ndarray) -> tuple[float, float]:
+    """MiVOLO head [male logit, female logit, raw age] -> (age in years, P(female))."""
+    logits = head[:2].astype(np.float64)
+    probs = np.exp(logits - logits.max())
+    probs /= probs.sum()
+    return float(head[2]) * MIVOLO_AGE_SCALE + MIVOLO_AGE_OFFSET, float(probs[1])
+
+
 def predict_face_demographics(
     image_bgr: np.ndarray,
     face_box: list[int],
     usable: bool = True,
     caveat: str | None = None,
+    body_box: list[int] | None = None,
 ) -> Demographics:
     """
     Estimate age (with an 80% interval and P(age < 18)) and gender for one verified face.
 
-    ``usable=False`` (tiny, very blurry or strongly turned faces) skips inference and reports Unsure
-    rather than producing numbers the model cannot support.
+    ``body_box`` (the person box containing the face) gives MiVOLO its second input when the body is visible.
+    ``usable=False`` (tiny, very blurred or strongly turned faces) skips inference and reports Unsure rather
+    than producing numbers the model cannot support.
     """
     result = Demographics()
     if not usable:
@@ -211,18 +330,20 @@ def predict_face_demographics(
         result.notes.append(caveat or "The face is not suitable for reliable age or gender estimation.")
         return result
 
-    session = get_session("age_gender")
-    views = _build_views(image_bgr, face_box)
-    if session is None or views is None:
+    session = get_session("mivolo")
+    views = _build_views(image_bgr, face_box, body_box)
+    if session is None or not views:
         return result
 
     try:
-        output = session.run(None, {session.get_inputs()[0].name: views})[0]
+        # The exported graph has a fixed batch size of 1, so each view is its own run.
+        heads = [session.run(["head"], {session.get_inputs()[0].name: view})[0][0] for view in views]
     except Exception:
         logger.exception("Age/gender inference failed")
         return result
 
+    parsed = np.array([_parse_head(head) for head in heads])
     result.model = MODEL_NAME_AGE_GENDER
-    mean_age = _estimate_age(output[:, 0], result)
-    _estimate_gender(output[:, 1], mean_age, result)
+    mean_age = _estimate_age(parsed[:, 0], result)
+    _estimate_gender(parsed[:, 1], mean_age, result)
     return result

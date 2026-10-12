@@ -2,16 +2,20 @@
 Build the locally-derived models used by the analyzer.
 
     pip install -r requirements-build.txt
-    python scripts/build_models.py            # downloads ~760 MB of upstream files, builds, verifies
-    python scripts/build_models.py --cleanup  # also delete the scratch download folder afterwards
+    python scripts/build_models.py                      # everything (about 1 GB of pinned downloads)
+    python scripts/build_models.py --only mivolo scrfd  # only some stages (manifest entries are merged)
+    python scripts/build_models.py --cleanup            # also delete the scratch download folder afterwards
 
-Outputs (in ``models/``):
-  * siglip2_base_vision_int8.onnx   SigLIP2-B/16 vision tower, INT8 (from onnx-community, Apache-2.0)
-  * age_gender_vit_int8.onnx        abhilash88 age/gender ViT, dynamically quantised to INT8
-  * label_embeddings.npz            prompt embeddings produced by the SigLIP2 text tower
-  * manifest.json                   SHA-256 of every output and of every upstream input
+Stages and outputs (in ``models/``):
+  siglip   siglip2_base_vision_int8.onnx + label_embeddings.npz   SigLIP2-B/16 vision tower (INT8) and the prompt
+           embeddings produced by its text tower (Apache-2.0, onnx-community export)
+  mivolo   mivolo_v2_age_gender.onnx    MiVOLO v2 (face + body transformer). The community export only returns age;
+           this stage exposes the network's full head so gender can be read too (graph edit, no retraining)
+  scrfd    scrfd_10g.onnx               SCRFD-10G face detector extracted from InsightFace's buffalo_l pack
 
-Every upstream download is verified against a pinned SHA-256 before it is used.
+Every upstream download is verified against a pinned SHA-256 before it is used, and models/manifest.json records the
+SHA-256 of every built file. NOTE ON LICENCES: see NOTICE.md - the SCRFD weights are published for non-commercial
+research, and the MiVOLO v2 training data is not fully disclosed.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import json
 import shutil
 import sys
 import urllib.request
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -44,26 +49,46 @@ _prompts = _load_label_prompts()
 FACE_CLASSES, IMAGE_CLASSES, prompt_templates = _prompts.FACE_CLASSES, _prompts.IMAGE_CLASSES, _prompts.prompt_templates
 
 SIGLIP = "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/resolve/main"
-AGEGENDER = "https://huggingface.co/onnx-community/age-gender-prediction-ONNX/resolve/main"
+MIVOLO = "https://huggingface.co/Sam-Apostel/mivolo-v2-age-onnx/resolve/main"
+BUFFALO = "https://github.com/deepinsight/insightface/releases/download/v0.7"
 
-# (local name, url, sha256)
+# local name -> (url, sha256)
 SOURCES = {
-    "siglip_vision": ("sig_vision_int8.onnx", f"{SIGLIP}/onnx/vision_model_int8.onnx"),
-    "siglip_text": ("sig_text_int8.onnx", f"{SIGLIP}/onnx/text_model_int8.onnx"),
-    "siglip_tokenizer": ("tokenizer.json", f"{SIGLIP}/tokenizer.json"),
-    "age_gender_fp32": ("agegender_fp32.onnx", f"{AGEGENDER}/onnx/model.onnx"),
+    "sig_vision_int8.onnx": (
+        f"{SIGLIP}/onnx/vision_model_int8.onnx",
+        "0dd31785a2713f1113ef2272472165c69d580473dae38d7b47568ac587795e70",
+    ),
+    "sig_text_int8.onnx": (
+        f"{SIGLIP}/onnx/text_model_int8.onnx",
+        "3a0603d3a00c05a80a6ded4743c16aaac7b1e62cdcc7e362e7ce418659b96400",
+    ),
+    "tokenizer.json": (
+        f"{SIGLIP}/tokenizer.json",
+        "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322",
+    ),
+    "mivolo_v2_age.onnx": (
+        f"{MIVOLO}/mivolo_v2_age.onnx",
+        "2db5e05be33b3f120518a86f29a4a65eb0a01c2967219b8787a7dead9b796951",
+    ),
+    "buffalo_l.zip": (
+        f"{BUFFALO}/buffalo_l.zip",
+        "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f",
+    ),
 }
-SOURCE_SHA256 = {
-    "sig_vision_int8.onnx": "0dd31785a2713f1113ef2272472165c69d580473dae38d7b47568ac587795e70",
-    "sig_text_int8.onnx": "3a0603d3a00c05a80a6ded4743c16aaac7b1e62cdcc7e362e7ce418659b96400",
-    "tokenizer.json": "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322",
-    "agegender_fp32.onnx": "0c35c868ea8ffba6d5fe727c1a6b82d9da600e690342d58ca268270560e28304",
+STAGE_SOURCES = {
+    "siglip": ["sig_vision_int8.onnx", "sig_text_int8.onnx", "tokenizer.json"],
+    "mivolo": ["mivolo_v2_age.onnx"],
+    "scrfd": ["buffalo_l.zip"],
 }
 
 OUT_VISION = "siglip2_base_vision_int8.onnx"
-OUT_AGE_GENDER = "age_gender_vit_int8.onnx"
+OUT_MIVOLO = "mivolo_v2_age_gender.onnx"
+OUT_SCRFD = "scrfd_10g.onnx"
 OUT_BANK = "label_embeddings.npz"
 OUT_MANIFEST = "manifest.json"
+SCRFD_MEMBER = "det_10g.onnx"
+SCRFD_SHA256 = "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+MIVOLO_HEAD_TENSOR = "add_45"  # [1, 3]: gender logits (male, female) then the raw age value, before slicing
 TEXT_TOKENS = 64
 
 
@@ -91,29 +116,40 @@ def download(url: str, dest: Path, expected: str) -> None:
     tmp.replace(dest)
 
 
-def quantize_age_gender(src: Path, dst: Path) -> None:
-    from onnxruntime.quantization import QuantType, quantize_dynamic
-
-    print("  quantising age/gender ViT to INT8 ...")
-    quantize_dynamic(str(src), str(dst), weight_type=QuantType.QInt8, op_types_to_quantize=["MatMul"])
-
-
-def validate_quantisation(fp32: Path, int8: Path) -> dict[str, float]:
-    """Refuse to ship an INT8 model whose outputs drift from the fp32 reference."""
+def build_mivolo(src: Path, dst: Path) -> dict[str, float]:
+    """Expose MiVOLO's full 3-value head (gender logits + raw age) next to the original age output."""
+    import onnx
     import onnxruntime as ort
+    from onnx import TensorProto, helper
 
-    ref = ort.InferenceSession(str(fp32), providers=["CPUExecutionProvider"])
-    quant = ort.InferenceSession(str(int8), providers=["CPUExecutionProvider"])
+    print("  exposing the gender head of the MiVOLO v2 graph ...")
+    model = onnx.load(str(src))
+    if not any(MIVOLO_HEAD_TENSOR in node.output for node in model.graph.node):
+        raise SystemExit(f"Expected tensor {MIVOLO_HEAD_TENSOR!r} not found: the upstream export has changed.")
+    model.graph.output.append(helper.make_tensor_value_info("head", TensorProto.FLOAT, [1, 3]))
+    model.graph.node.append(helper.make_node("Identity", [MIVOLO_HEAD_TENSOR], ["head"]))
+    onnx.save(model, str(dst))
+
+    session = ort.InferenceSession(str(dst), providers=["CPUExecutionProvider"])
     rng = np.random.default_rng(0)
-    batch = rng.normal(0.0, 1.0, size=(8, 3, 224, 224)).astype(np.float32)
-    a = ref.run(None, {"pixel_values": batch})[0]
-    b = quant.run(None, {"pixel_values": batch})[0]
-    age_drift = float(np.mean(np.abs(a[:, 0] - b[:, 0])))
-    gender_drift = float(np.mean(np.abs(a[:, 1] - b[:, 1])))
-    print(f"  INT8 vs fp32 drift: age {age_drift:.2f} y, gender {gender_drift:.3f}")
-    if age_drift > 3.0 or gender_drift > 0.15:
-        raise SystemExit("INT8 model drifts too far from the fp32 reference; refusing to ship it.")
-    return {"mean_abs_age_drift_years": round(age_drift, 3), "mean_abs_gender_drift": round(gender_drift, 4)}
+    worst = 0.0
+    for _ in range(3):
+        x = rng.normal(0.0, 1.0, size=(1, 6, 384, 384)).astype(np.float32)
+        age, head = session.run(["age", "head"], {"faces_bodies": x})
+        worst = max(worst, abs(float(age[0, 0]) - float(head[0, 2] * 122.0 + 61.0)))
+    print(f"  age from original output vs from exposed head: max difference {worst:.2e} years")
+    if worst > 1e-3:
+        raise SystemExit("The exposed head does not reproduce the original age output; refusing to ship it.")
+    return {"max_age_difference_years": worst}
+
+
+def extract_scrfd(zip_path: Path, dst: Path) -> None:
+    print("  extracting the SCRFD-10G detector from the buffalo_l pack ...")
+    with zipfile.ZipFile(zip_path) as archive:
+        data = archive.read(SCRFD_MEMBER)
+    if hashlib.sha256(data).hexdigest() != SCRFD_SHA256:
+        raise SystemExit(f"{SCRFD_MEMBER} inside buffalo_l.zip does not match the pinned SHA-256.")
+    dst.write_bytes(data)
 
 
 def embed_prompts(text_model: Path, tokenizer_path: Path, prompts: list[str]) -> np.ndarray:
@@ -150,42 +186,56 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--work-dir", type=Path, default=ROOT / ".model_build" / "dl")
     parser.add_argument("--models-dir", type=Path, default=ROOT / "models")
+    parser.add_argument("--only", nargs="+", choices=sorted(STAGE_SOURCES), help="build only these stages")
     parser.add_argument("--cleanup", action="store_true", help="delete the scratch download folder when done")
     args = parser.parse_args()
 
+    stages = list(args.only or STAGE_SOURCES)
     work, models = args.work_dir, args.models_dir
     work.mkdir(parents=True, exist_ok=True)
     models.mkdir(parents=True, exist_ok=True)
 
-    print("1/4 fetching pinned upstream files")
-    for local, url in SOURCES.values():
-        download(url, work / local, SOURCE_SHA256[local])
+    manifest_path = models / OUT_MANIFEST
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    manifest.update({"schema": 2})
+    manifest.setdefault("files", {})
+    manifest.setdefault("upstream_sources", {})
+    manifest.setdefault("validation", {})
 
-    print("2/4 SigLIP2 vision tower")
-    shutil.copyfile(work / "sig_vision_int8.onnx", models / OUT_VISION)
+    print("fetching pinned upstream files")
+    for stage in stages:
+        for name in STAGE_SOURCES[stage]:
+            url, expected = SOURCES[name]
+            download(url, work / name, expected)
+            manifest["upstream_sources"][name] = expected
 
-    print("3/4 age/gender ViT")
-    quantize_age_gender(work / "agegender_fp32.onnx", models / OUT_AGE_GENDER)
-    drift = validate_quantisation(work / "agegender_fp32.onnx", models / OUT_AGE_GENDER)
-
-    print("4/4 label embeddings")
-    build_bank(work / "sig_text_int8.onnx", work / "tokenizer.json", models / OUT_BANK)
+    built: list[str] = []
+    if "siglip" in stages:
+        print("SigLIP2 vision tower + label embeddings")
+        shutil.copyfile(work / "sig_vision_int8.onnx", models / OUT_VISION)
+        build_bank(work / "sig_text_int8.onnx", work / "tokenizer.json", models / OUT_BANK)
+        built += [OUT_VISION, OUT_BANK]
+        manifest["label_bank"] = {"file": OUT_BANK, "sha256": sha256_of(models / OUT_BANK)}
+    if "mivolo" in stages:
+        print("MiVOLO v2 age + gender")
+        manifest["validation"]["mivolo_exposed_head"] = build_mivolo(work / "mivolo_v2_age.onnx", models / OUT_MIVOLO)
+        built.append(OUT_MIVOLO)
+    if "scrfd" in stages:
+        print("SCRFD-10G face detector")
+        extract_scrfd(work / "buffalo_l.zip", models / OUT_SCRFD)
+        built.append(OUT_SCRFD)
 
     import onnxruntime
 
-    manifest = {
-        "schema": 1,
-        "onnxruntime_version": onnxruntime.__version__,
-        "files": {
-            name: {"sha256": sha256_of(models / name), "size": (models / name).stat().st_size}
-            for name in (OUT_VISION, OUT_AGE_GENDER)
-        },
-        "label_bank": {"file": OUT_BANK, "sha256": sha256_of(models / OUT_BANK)},
-        "upstream_sources": SOURCE_SHA256,
-        "quantisation_validation": drift,
-    }
-    (models / OUT_MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    print("built:", ", ".join([OUT_VISION, OUT_AGE_GENDER, OUT_BANK, OUT_MANIFEST]))
+    manifest["onnxruntime_version"] = onnxruntime.__version__
+    for name in built:
+        if name.endswith(".onnx"):
+            manifest["files"][name] = {"sha256": sha256_of(models / name), "size": (models / name).stat().st_size}
+    # drop entries of models that are no longer part of the pipeline
+    manifest["files"].pop("age_gender_vit_int8.onnx", None)
+    manifest.pop("quantisation_validation", None)
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print("built:", ", ".join([*built, OUT_MANIFEST]))
 
     if args.cleanup:
         shutil.rmtree(work, ignore_errors=True)

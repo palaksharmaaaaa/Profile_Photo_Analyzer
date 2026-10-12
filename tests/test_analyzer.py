@@ -73,7 +73,9 @@ class Harness:
 
     def __init__(self):
         self.faces: list[DetectedFace] = []
-        self.face_model: str | None = "YuNet test"
+        self.face_models: list[str] = ["YuNet test"]
+        self.persons: list[list[int]] = []
+        self.demo_calls: list[dict] = []
         self.entities: list[dict] = []
         self.entity_models: list[str] = ["YOLOX test"]
         self.verdicts: dict[tuple, dict] = {}
@@ -82,6 +84,10 @@ class Harness:
         self.demographics = adult()
         self.semantic_available = True
 
+    def _demographics(self, *args, **kwargs):
+        self.demo_calls.append(kwargs)
+        return self.demographics
+
     def _classify_boxes(self, image, boxes):
         return [self.verdicts.get(tuple(b), self.default_verdict) for b in boxes]
 
@@ -89,11 +95,15 @@ class Harness:
         image = textured(SIZE) if image is None else image
         pil = Image.fromarray(image[:, :, ::-1])
         with (
-            patch.object(az, "detect_faces", side_effect=lambda img: (self.faces, self.face_model)),
-            patch.object(az, "detect_non_human_entities", side_effect=lambda img: (self.entities, self.entity_models)),
+            patch.object(az, "detect_faces", side_effect=lambda img: (self.faces, self.face_models)),
+            patch.object(
+                az,
+                "detect_entities_and_persons",
+                side_effect=lambda img: (self.entities, self.persons, self.entity_models),
+            ),
             patch.object(az, "classify_boxes", side_effect=self._classify_boxes),
             patch.object(az, "classify_image_type", side_effect=lambda img: self.image_type),
-            patch.object(az, "predict_face_demographics", side_effect=lambda *a, **k: self.demographics),
+            patch.object(az, "predict_face_demographics", side_effect=self._demographics),
             patch.object(az.semantic_service, "is_available", side_effect=lambda: self.semantic_available),
         ):
             result = az.analyze_profile_photo_image(pil, filename="p.jpg", format_detected="image/jpeg")
@@ -354,7 +364,7 @@ def test_no_faces_at_all(h):
 
 
 def test_face_detector_failure_is_visible_in_the_pipeline_steps(h):
-    h.face_model = None
+    h.face_models = []
     h.entity_models = []
     h.semantic_available = False
     result = h.run()
@@ -422,8 +432,8 @@ def test_metadata_is_reported_in_diagnostics(h):
     bgr = textured(SIZE)
     pil = Image.fromarray(bgr[:, :, ::-1])
     with (
-        patch.object(az, "detect_faces", return_value=(h.faces, "YuNet test")),
-        patch.object(az, "detect_non_human_entities", return_value=([], [])),
+        patch.object(az, "detect_faces", return_value=(h.faces, ["YuNet test"])),
+        patch.object(az, "detect_entities_and_persons", return_value=([], [], [])),
         patch.object(az, "classify_boxes", side_effect=lambda img, boxes: [HUMAN] * len(boxes)),
         patch.object(az, "classify_image_type", return_value=PHOTO),
         patch.object(az, "predict_face_demographics", return_value=adult()),
@@ -473,3 +483,28 @@ def test_weak_detector_only_animal_is_unsure_not_confirmed():
     assert bucket == az.BUCKET_UNSURE and "low confidence" in item["label"]
     assert az._entity_item(entity([0, 0, 10, 10], label="Dog", confidence=0.9), UNSURE)[1] == az.BUCKET_OTHER
     assert az._entity_item({**weak, "confidence": None}, UNSURE)[1] == az.BUCKET_UNSURE
+
+
+# ---- body crops for the age model -----------------------------------------------------------------
+
+
+def test_match_body_uses_the_tightest_person_box_that_is_much_taller_than_the_face():
+    face = [200, 200, 300, 300]
+    tall = [150, 150, 350, 600]
+    taller = [100, 100, 400, 700]
+    head_and_shoulders = [180, 180, 320, 330]  # only 1.5x the face height: no extra information
+    elsewhere = [450, 100, 580, 700]
+    assert az._match_body(face, [taller, tall, head_and_shoulders, elsewhere]) == tall
+    assert az._match_body(face, [head_and_shoulders, elsewhere]) is None
+    assert az._match_body(face, []) is None
+
+
+def test_each_face_gets_its_own_body_crop(h):
+    h.faces = [det(BOX_A)]
+    h.persons = [[150, 150, 450, 590]]
+    h.run()
+    assert h.demo_calls[0]["body_box"] == [150, 150, 450, 590]
+    h.demo_calls.clear()
+    h.persons = []
+    h.run()
+    assert h.demo_calls[0]["body_box"] is None

@@ -205,13 +205,27 @@ def test_letterbox_preserves_aspect_and_pads_grey():
     assert rgb_canvas[0, 0, 0] == 200  # BGR blue became RGB's first channel
 
 
-def test_detect_entities_runs_both_models_and_reports_them():
-    yolox = FakeSession(lambda n, f: [yolox_output(10 * 80 + 10, 15)])
+def test_decode_yolox_can_return_people_for_body_crops():
+    cell = 10 * 80 + 10
+    out = cs._decode_yolox(yolox_output(cell, 0), 1.0, 640, 640, 0.5, cs.PERSON_CLASS)
+    assert len(out) == 1 and out[0]["face_type"] == "person"
+    assert out[0]["box_xyxy"] == [280, 280, 360, 360]
+    assert cs._decode_yolox(yolox_output(cell, 16), 1.0, 640, 640, 0.5, cs.PERSON_CLASS) == []  # a dog is not a person
+
+
+def test_detect_entities_runs_all_models_and_reports_them():
+    both = yolox_output(10 * 80 + 10, 15)
+    both[0, 20 * 80 + 20, 0:2] = 20.0
+    both[0, 20 * 80 + 20, 2:4] = np.log(40.0)
+    both[0, 20 * 80 + 20, 4] = 0.9
+    both[0, 20 * 80 + 20, 5] = 0.95  # class 0: a person
+    yolox = FakeSession(lambda n, f: [both])
     anime = FakeSession(lambda n, f: [anime_output()])
     sessions = {"yolox": yolox, "anime_face": anime}
     with patch.object(cs, "get_session", side_effect=sessions.get):
-        entities, executed = cs.detect_non_human_entities(np.zeros((640, 640, 3), np.uint8))
+        entities, persons, executed = cs.detect_entities_and_persons(np.zeros((640, 640, 3), np.uint8))
     assert {e["face_type"] for e in entities} == {"animal", "anime"}
+    assert len(persons) == 1 and persons[0][3] - persons[0][1] > 100
     assert executed == [cs.MODEL_NAME_YOLOX, cs.MODEL_NAME_ANIME_FACE]
 
 
@@ -221,17 +235,17 @@ def test_detect_entities_reports_only_models_that_really_ran():
 
     sessions = {"yolox": FakeSession(explode), "anime_face": None}
     with patch.object(cs, "get_session", side_effect=sessions.get):
-        entities, executed = cs.detect_non_human_entities(np.zeros((64, 64, 3), np.uint8))
-    assert entities == [] and executed == []
+        entities, persons, executed = cs.detect_entities_and_persons(np.zeros((64, 64, 3), np.uint8))
+    assert entities == [] and persons == [] and executed == []
 
     sessions = {"yolox": None, "anime_face": FakeSession(explode)}
     with patch.object(cs, "get_session", side_effect=sessions.get):
-        assert cs.detect_non_human_entities(np.zeros((64, 64, 3), np.uint8)) == ([], [])
+        assert cs.detect_entities_and_persons(np.zeros((64, 64, 3), np.uint8)) == ([], [], [])
 
 
 def test_detect_entities_empty_image():
-    assert cs.detect_non_human_entities(np.zeros((0, 0, 3), np.uint8)) == ([], [])
-    assert cs.detect_non_human_entities(None) == ([], [])
+    assert cs.detect_entities_and_persons(np.zeros((0, 0, 3), np.uint8)) == ([], [], [])
+    assert cs.detect_entities_and_persons(None) == ([], [], [])
 
 
 def test_thresholds_come_from_settings():

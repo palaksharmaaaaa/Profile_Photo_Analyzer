@@ -19,7 +19,7 @@ def write_manifest(models_dir, name: str, data: bytes):
 
 
 def test_registry_declares_every_model_with_licence_and_role():
-    assert set(mm.MODEL_SPECS) == {"yunet", "anime_face", "yolox", "siglip_vision", "age_gender"}
+    assert set(mm.MODEL_SPECS) == {"yunet", "anime_face", "yolox", "siglip_vision", "scrfd", "mivolo"}
     for spec in mm.MODEL_SPECS.values():
         assert spec.license and spec.role and spec.filename.endswith(".onnx")
 
@@ -28,7 +28,7 @@ def test_downloadable_models_are_hash_pinned_and_built_models_are_not_downloadab
     for key in ("yunet", "anime_face", "yolox"):
         assert mm.MODEL_SPECS[key].url.startswith("https://")
         assert len(mm.MODEL_SPECS[key].sha256) == 64
-    for key in ("siglip_vision", "age_gender"):
+    for key in ("siglip_vision", "scrfd", "mivolo"):
         assert mm.MODEL_SPECS[key].url is None
 
 
@@ -222,7 +222,7 @@ def test_check_models_status_reports_each_model_honestly(models_dir):
 
 
 def test_get_session_none_when_model_missing(models_dir):
-    assert mm.get_session("age_gender") is None
+    assert mm.get_session("mivolo") is None
 
 
 def test_get_session_creates_once_with_bounded_threads(models_dir):

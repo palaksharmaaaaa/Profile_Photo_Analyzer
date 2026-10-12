@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import onnxruntime  # noqa: E402
 
 from app.services.analyzer import analyze_profile_photo_image  # noqa: E402
-from app.services.classifier_service import classify_boxes, classify_image_type, detect_non_human_entities  # noqa: E402
+from app.services.classifier_service import classify_boxes, classify_image_type, detect_entities_and_persons  # noqa: E402
 from app.services.face_service import detect_faces, predict_face_demographics  # noqa: E402
 from app.services.image_utils import decode_image_bytes, pil_to_bgr  # noqa: E402
 from app.services.quality_service import check_image_information  # noqa: E402
@@ -70,10 +70,10 @@ def main() -> None:
     stages = {
         "information check": lambda: check_image_information(bgr),
         "image type (SigLIP2)": lambda: classify_image_type(bgr),
-        "face detection (YuNet)": lambda: detect_faces(bgr),
-        "animal + anime detection": lambda: detect_non_human_entities(bgr),
+        "face detection (SCRFD + YuNet)": lambda: detect_faces(bgr),
+        "animal + person + anime detection": lambda: detect_entities_and_persons(bgr),
         "face verification (1 crop)": lambda: classify_boxes(bgr, [box]),
-        "age + gender (6 views)": lambda: predict_face_demographics(bgr, box),
+        "age + gender (MiVOLO, 3 views)": lambda: predict_face_demographics(bgr, box),
         "END-TO-END": lambda: analyze_profile_photo_image(decoded.image, "bench", decoded.format_detected, decoded),
     }
     results = {name: time_stage(fn, args.iterations) for name, fn in stages.items()}

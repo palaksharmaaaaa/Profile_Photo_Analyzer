@@ -32,6 +32,7 @@ COCO_ANIMAL_CLASSES: dict[int, tuple[str, str]] = {
     23: ("animal", "Giraffe"),
 }
 
+PERSON_CLASS: dict[int, tuple[str, str]] = {0: ("person", "Person")}
 DETECTOR_INPUT = 640
 LETTERBOX_PAD = 114
 PHOTO_GROUP = "photo"
@@ -238,8 +239,15 @@ def _to_entities(
     return entities
 
 
-def _decode_yolox(output: np.ndarray, ratio: float, width: int, height: int, threshold: float) -> list[dict[str, Any]]:
-    """Decode raw YOLOX output [1, 8400, 85] (grid/stride decoding, objectness x class score)."""
+def _decode_yolox(
+    output: np.ndarray,
+    ratio: float,
+    width: int,
+    height: int,
+    threshold: float,
+    classes: dict[int, tuple[str, str]] = COCO_ANIMAL_CLASSES,
+) -> list[dict[str, Any]]:
+    """Decode raw YOLOX output [1, 8400, 85] (grid/stride decoding, objectness x class score) for ``classes``."""
     if output.ndim != 3 or output.shape[2] < 6:
         return []
     preds = output[0]
@@ -249,8 +257,8 @@ def _decode_yolox(output: np.ndarray, ratio: float, width: int, height: int, thr
 
     centers = (preds[:, :2] + grid) * stride
     sizes = np.exp(np.clip(preds[:, 2:4], -10, 10)) * stride
-    animal_ids = np.array(sorted(COCO_ANIMAL_CLASSES))
-    class_scores = preds[:, 4:5] * preds[:, 5:][:, animal_ids]
+    class_ids = np.array(sorted(classes))
+    class_scores = preds[:, 4:5] * preds[:, 5:][:, class_ids]
     best = class_scores.argmax(axis=1)
     best_score = class_scores.max(axis=1)
     keep = best_score >= threshold
@@ -258,7 +266,7 @@ def _decode_yolox(output: np.ndarray, ratio: float, width: int, height: int, thr
         return []
 
     boxes = np.concatenate([centers - sizes / 2.0, centers + sizes / 2.0], axis=1)[keep] / ratio
-    labels = [COCO_ANIMAL_CLASSES[int(animal_ids[b])] for b in best[keep]]
+    labels = [classes[int(class_ids[b])] for b in best[keep]]
     return _to_entities(boxes, best_score[keep], labels, threshold, MODEL_NAME_YOLOX, width, height)
 
 
@@ -285,17 +293,21 @@ def _decode_anime(output: np.ndarray, ratio: float, width: int, height: int, thr
     return _to_entities(boxes, rows[:, 4], labels, threshold, MODEL_NAME_ANIME_FACE, width, height)
 
 
-def detect_non_human_entities(image_bgr: np.ndarray) -> tuple[list[dict[str, Any]], list[str]]:
+def detect_entities_and_persons(
+    image_bgr: np.ndarray,
+) -> tuple[list[dict[str, Any]], list[list[int]], list[str]]:
     """
-    Locate animals/birds (YOLOX) and anime faces (DeepGHS).
+    Locate animals/birds (YOLOX), people (YOLOX, same pass) and anime faces (DeepGHS).
 
-    Returns the candidate entities and the names of the models that really ran without error.
+    Returns the non-human candidate entities, the person boxes (used as body crops for age/gender) and the names
+    of the models that really ran without error.
     """
     if image_bgr is None or image_bgr.size == 0:
-        return [], []
+        return [], [], []
 
     height, width = image_bgr.shape[:2]
     entities: list[dict[str, Any]] = []
+    persons: list[list[int]] = []
     executed: list[str] = []
 
     yolox = get_session("yolox")
@@ -305,9 +317,11 @@ def detect_non_human_entities(image_bgr: np.ndarray) -> tuple[list[dict[str, Any
             blob = canvas.astype(np.float32).transpose(2, 0, 1)[np.newaxis]
             output = yolox.run(None, {yolox.get_inputs()[0].name: blob})[0]
             entities.extend(_decode_yolox(output, ratio, width, height, settings.ANIMAL_CONF_THRESHOLD))
+            people = _decode_yolox(output, ratio, width, height, settings.PERSON_CONF_THRESHOLD, PERSON_CLASS)
+            persons.extend(person["box_xyxy"] for person in people)
             executed.append(MODEL_NAME_YOLOX)
         except Exception:
-            logger.exception("Animal detection failed")
+            logger.exception("Animal/person detection failed")
 
     anime = get_session("anime_face")
     if anime is not None:
@@ -320,4 +334,4 @@ def detect_non_human_entities(image_bgr: np.ndarray) -> tuple[list[dict[str, Any
         except Exception:
             logger.exception("Anime face detection failed")
 
-    return entities, executed
+    return entities, persons, executed

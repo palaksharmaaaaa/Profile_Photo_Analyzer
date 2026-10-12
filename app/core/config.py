@@ -29,10 +29,15 @@ class Settings(BaseSettings):
     MIN_LAPLACIAN_VAR: float = 1.5
 
     # ---- Face detection -----------------------------------------------------------
+    SCRFD_THRESHOLD: float = 0.40  # SCRFD-10G candidate threshold (candidates are verified later)
     HUMAN_FACE_CONF_THRESHOLD: float = 0.60  # YuNet candidate threshold (candidates are verified later)
     FACE_NMS_IOU: float = 0.40
     SMALL_IMAGE_UPSCALE_SIDE: int = 1000  # extra 2x detection pass when the longest side is below this
     ANIMAL_CONF_THRESHOLD: float = 0.45
+    PERSON_CONF_THRESHOLD: float = 0.50  # person boxes give MiVOLO a body crop in addition to the face
+    BODY_MIN_HEIGHT_RATIO: float = (
+        2.0  # a person box is used as a body crop only if it is this much taller than the face
+    )
     ANIMAL_DETECTOR_ONLY_MIN_CONF: float = 0.65  # unverified animal boxes below this are listed as Unsure, not Dog/Cat
     ANIME_FACE_CONF_THRESHOLD: float = 0.35
 
@@ -48,8 +53,11 @@ class Settings(BaseSettings):
     IMAGE_TYPE_MIN_MASS: float = 0.60  # share of probability mass a group needs for a confident image type
 
     # ---- Age / gender -------------------------------------------------------------
-    AGE_CROP_MARGINS: tuple[float, ...] = (0.0, 0.2, 0.4)  # every margin is also evaluated mirrored
-    AGE_MODEL_MAE_YEARS: float = 4.5  # self-reported by the model author on UTKFace; NOT measured here
+    # Views per face, as (crop margin, mirrored); the disagreement between views is the uncertainty measure.
+    AGE_VIEWS: tuple[tuple[float, bool], ...] = ((0.0, False), (0.0, True), (0.15, False))
+    # Average age error of MiVOLO across 8 public datasets in an independent benchmark (arXiv 2602.07815);
+    # NOT re-measured here. It sets the width of the reported age range.
+    AGE_MODEL_MAE_YEARS: float = 5.1
     AGE_SIGMA_PER_MAE: float = 1.25  # MAE -> Gaussian sigma for a normal error assumption
     AGE_UNSURE_VIEW_STD: float = 6.0  # views of the same face disagree more than this => age is Unsure
     AGE_MIN_CREDIBLE: float = 1.0

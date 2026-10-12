@@ -19,17 +19,21 @@ lists exactly which ones (`technical_diagnostics.models_executed`).
 upload (<= 10 MB; JPEG, PNG, WebP, GIF, TIFF, BMP - format checked from the file's bytes, not its extension)
   -> decode: EXIF-upright, transparency flattened onto white, first frame of animations, working size capped at 2048 px
   -> 2. information check (entropy / std-dev / Laplacian)           -> "no information" stops here, no model runs
-  -> 3. face candidates:  YuNet (faces)  +  YOLOX-S (animals/birds)  +  DeepGHS (anime faces)
+  -> 3. face candidates:  SCRFD-10G + YuNet (merged)  and  YOLOX-S (animals, birds, people)  and  DeepGHS (anime faces)
         every candidate crop is verified by SigLIP2 zero-shot:  real human | animal | bird | cartoon | anime |
         painting | 3D | doll/statue/mask | diagram | not a face | Unsure
-  -> 4. for every verified real human face: quality/pose check, then age + gender
-        (3 crop margins x mirrored = 6 views; the disagreement between views is the uncertainty measure)
+  -> 4. for every verified real human face: quality/pose check, then MiVOLO v2 age + gender on the face crop
+        (and the body crop when a body is visible), 3 views per face; disagreement between views = uncertainty
   -> 5. response: counts, per-face results, unverified candidates, the models that ran
 ```
 
-Why per-face verification: YuNet also fires on cat, dog and cartoon faces, and the image as a whole may be a photo
-that contains both people and animals. The decision "is this a real human face" is therefore made on each face crop,
-and age/gender are only produced for faces that pass it.
+Why per-face verification: the detectors also fire on cat, dog and cartoon faces, and the image as a whole may be a
+photo that contains both people and animals. The decision "is this a real human face" is therefore made on each face
+crop, and age/gender are only produced for faces that pass it.
+
+Step 2 deliberately uses classical measures (Shannon entropy, standard deviation, Laplacian variance) rather than a
+neural network: "is this image blank or a uniform fill" is a measurable property, and a pretrained model would only
+add latency and a chance of being wrong.
 
 ### What the age and gender fields mean
 
@@ -37,7 +41,7 @@ and age/gender are only produced for faces that pass it.
 | :--- | :--- |
 | `age_group` | The 3-year bracket containing the estimated age, `Unsure`, or `Not Detected`. |
 | `estimated_age`, `age_range` | Mean over the 6 views, and an 80 % interval. The interval is wide on purpose (see *Limits*). |
-| `age_confidence` | Probability that the true age is inside `age_group` (typically 15-20 %: a 3-year bracket is narrower than the model's error). |
+| `age_confidence` | Probability that the true age is inside `age_group` (typically 12-18 %: a 3-year bracket is narrower than the model's error). |
 | `p_under_18` | Probability the person is under 18. `possible_minor_risk` is true at or above `PPA_MINOR_RISK_PROBABILITY` (0.10). |
 | `gender` | `Female`, `Male`, `Unsure` or `Not Detected` (appearance-based; `Unsure` for apparent children, low scores or disagreeing views). |
 
@@ -50,14 +54,16 @@ reported `Unsure` without running it.
 
 | Task | Model | Size | Licence |
 | :--- | :--- | ---: | :--- |
-| Face candidates | OpenCV **YuNet** 2023mar | 0.2 MB | MIT (OpenCV Zoo) |
-| Animals and birds | **YOLOX-S** (COCO) | 35.9 MB | Apache-2.0 |
+| Face candidates (primary) | **SCRFD-10G** (InsightFace `buffalo_l` pack) | 16.9 MB | InsightFace weights: non-commercial research only |
+| Face candidates (second opinion) | OpenCV **YuNet** 2023mar | 0.2 MB | MIT (OpenCV Zoo) |
+| Animals, birds, people | **YOLOX-S** (COCO) | 35.9 MB | Apache-2.0 |
 | Anime / cartoon face locator | DeepGHS anime face v1.4n | 12.1 MB | MIT (model card) |
-| Real human vs. everything else, image type | **SigLIP2** Base/16-224 vision tower, INT8, with pre-computed prompt embeddings | 94.6 MB | Apache-2.0 |
-| Age + gender | abhilash88 ViT age/gender, INT8-quantised by `scripts/build_models.py` | 88.9 MB | Apache-2.0 per model card; **see [NOTICE.md](NOTICE.md)** |
+| Real human vs. everything else, image type | **SigLIP2** Base/16-224 vision tower, INT8, pre-computed prompt embeddings | 94.6 MB | Apache-2.0 |
+| Age + gender | **MiVOLO v2** (face + body transformer; community ONNX export with the gender head exposed) | 117.8 MB | Apache-2.0 per model card; training data only partly disclosed |
 
-Total: about 232 MB. **Read [NOTICE.md](NOTICE.md) before any commercial use**: the age/gender model was trained on
-UTKFace, whose data terms are reported as non-commercial.
+Total: about 277 MB (each model is under 250 MB). These were chosen as the strongest pretrained models found, without
+regard to licence. **Read [NOTICE.md](NOTICE.md) before any commercial use**: the SCRFD weights are non-commercial,
+and the MiVOLO v2 training data is not fully disclosed.
 
 ---
 
@@ -68,8 +74,9 @@ python -m venv .venv
 .venv\Scripts\activate                     # Windows;  source .venv/bin/activate on Linux/macOS
 pip install -r requirements.lock           # runtime dependencies only (no torch, no transformers)
 
-# One-time model build: downloads ~760 MB of pinned upstream files (SHA-256 verified), builds INT8 models and
-# the label embeddings into models/. YuNet, YOLOX and the anime detector download themselves on first use.
+# One-time model build: downloads ~1 GB of pinned upstream files (SHA-256 verified) and builds the SigLIP2 model +
+# label embeddings, the MiVOLO age/gender model and the SCRFD detector into models/.
+# YuNet, YOLOX and the anime detector download themselves on first use.
 pip install -r requirements-build.txt
 python scripts/build_models.py --cleanup
 
@@ -105,6 +112,7 @@ Every setting in `app/core/config.py` can be overridden with a `PPA_` environmen
 | `PPA_MAX_UPLOAD_BYTES` | 10 MiB | Upload limit. |
 | `PPA_WORKING_MAX_SIDE` | 2048 | Longest side the analysis runs at (larger uploads are downscaled). |
 | `PPA_HUMAN_MIN_PROB` / `PPA_HUMAN_MIN_MARGIN` | 0.60 / 0.25 | How sure SigLIP2 must be to call a face a real human face. |
+| `PPA_SCRFD_THRESHOLD` | 0.40 | Candidate score for the SCRFD detector (candidates are verified afterwards). |
 | `PPA_AGE_UNSURE_VIEW_STD` | 6.0 | View disagreement (years) above which age is `Unsure`. |
 | `PPA_MINOR_RISK_PROBABILITY` | 0.10 | `p_under_18` at/above which `possible_minor_risk` is set. |
 | `PPA_GENDER_SURETY_THRESHOLD` | 0.80 | Minimum gender score, otherwise `Unsure`. |
@@ -116,11 +124,10 @@ Every setting in `app/core/config.py` can be overridden with a `PPA_` environmen
 
 ## Limits you should know about
 
-* **Age is approximate.** The model's author reports a mean error of 4.5 years on UTKFace (self-reported, not
-  re-measured here). A 3-year bracket is narrower than that error, so it is the *most likely* bracket, shown together
+* **Age is approximate.** In an independent 8-dataset benchmark MiVOLO's average error was 5.1 years (the figure
+  used here to size the age range; not re-measured on our data). A 3-year bracket is narrower than that error, so it is the *most likely* bracket, shown together
   with an 80 % range and its probability. It is not age verification.
-* **Gender is a visual appearance classification**, binary, unreliable for children (the author reports 78 % for ages
-  5-12; this service reports `Unsure` below 13) and for atypical presentation. Do not use it for decisions about people.
+* **Gender is a visual appearance classification**, binary, hard to judge for children (this service reports `Unsure` below 13) and for atypical presentation. Do not use it for decisions about people.
 * **Animals/birds** are found as whole-animal boxes from the 10 COCO animal classes (cat, dog, horse, sheep, cow,
   elephant, bear, zebra, giraffe, bird); other species are only caught if a face-like candidate is verified as an animal.
 * Cartoons/paintings/diagrams are *counted* only when a detector or YuNet localises them; otherwise the image-type
@@ -141,7 +148,7 @@ python scripts/benchmark_latency.py --image portrait.jpg
 python scripts/evaluate_fairface.py --csv fairface_label_val.csv --images <dir>
 ```
 
-Current state: 214 tests (one needs `PPA_TEST_IMAGES_DIR`); statement and branch coverage of `app/` is 100 % (the real-model integration tests are
+Current state: 239 tests (one needs `PPA_TEST_IMAGES_DIR`); statement and branch coverage of `app/` is 100 % (the real-model integration tests are
 included when the models are built, and skipped otherwise). Set `PPA_TEST_IMAGES_DIR` to also smoke-test your own photos.
 
 ```text
@@ -152,7 +159,7 @@ app/
   services/
     image_utils.py         decoding (EXIF, alpha, limits), crops, annotation
     quality_service.py     information check, face quality/pose
-    face_service.py        YuNet detection, age/gender with uncertainty
+    face_service.py        SCRFD + YuNet detection, MiVOLO age/gender with uncertainty
     classifier_service.py  image type, YOLOX/anime detectors, crop verdicts
     semantic_service.py    SigLIP2 embeddings and zero-shot scoring
     label_prompts.py       the zero-shot label taxonomy

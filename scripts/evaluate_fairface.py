@@ -4,7 +4,7 @@ Measure the age/gender stage on labelled data (FairFace validation set, CC BY 4.
     python scripts/evaluate_fairface.py --csv fairface_label_val.csv --images <folder containing val/> [--limit 1000]
 
 FairFace labels age in 9 bins ("0-2", "3-9", "10-19", "20-29", ..., "more than 70") and gender as Male/Female.
-The model was trained on UTKFace, so FairFace is an out-of-distribution test. Reported numbers:
+MiVOLO v2's training data is not fully disclosed, so check for overlap before reading the numbers. Reported numbers:
 
   * gender accuracy among the faces where a gender was given, and the share reported "Unsure"
   * share of faces whose estimated age lies inside the labelled FairFace bin (+-1 year tolerance)

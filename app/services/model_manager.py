@@ -74,12 +74,19 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         role="real-human vs non-human face and image-type verification",
         license="Apache-2.0 (Google SigLIP2)",
     ),
-    "age_gender": ModelSpec(
-        key="age_gender",
-        filename="age_gender_vit_int8.onnx",
-        display_name="ViT Age/Gender (abhilash88, INT8)",
+    "scrfd": ModelSpec(
+        key="scrfd",
+        filename="scrfd_10g.onnx",
+        display_name="SCRFD-10G Face Detector (InsightFace)",
+        role="primary face candidate detection",
+        license="InsightFace pretrained weights: non-commercial research only (see NOTICE.md)",
+    ),
+    "mivolo": ModelSpec(
+        key="mivolo",
+        filename="mivolo_v2_age_gender.onnx",
+        display_name="MiVOLO v2 Age/Gender (face + body transformer)",
         role="age regression and gender classification",
-        license="Apache-2.0 per model card; trained on UTKFace (non-commercial dataset terms - see NOTICE.md)",
+        license="Apache-2.0 per model card; training data only partly disclosed (see NOTICE.md)",
     ),
 }
 

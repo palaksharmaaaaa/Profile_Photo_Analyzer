@@ -50,7 +50,7 @@ def test_health_reports_every_model_and_degrades_honestly():
     data = client.get("/health").json()
     assert data["status"] in ("ready", "degraded")
     assert data["version"] == settings.APP_VERSION
-    assert {"yunet", "yolox", "anime_face", "siglip_vision", "age_gender", "label_bank"} <= set(data["models"])
+    assert {"yunet", "yolox", "anime_face", "siglip_vision", "scrfd", "mivolo", "label_bank"} <= set(data["models"])
     with patch("app.api.routes.check_models_status", return_value={"yunet": {"ready": False, "size_bytes": 0}}):
         assert client.get("/health").json()["status"] == "degraded"
     with patch("app.api.routes.check_models_status", return_value={"yunet": {"ready": True, "size_bytes": 1}}):
@@ -72,8 +72,8 @@ def test_real_pipeline_output_satisfies_public_schema(test_image_bytes):
     from app.services import analyzer as az
 
     with (
-        patch.object(az, "detect_faces", return_value=([det([200, 200, 400, 400])], "YuNet test")),
-        patch.object(az, "detect_non_human_entities", return_value=([], [])),
+        patch.object(az, "detect_faces", return_value=([det([200, 200, 400, 400])], ["Detector test"])),
+        patch.object(az, "detect_entities_and_persons", return_value=([], [], [])),
         patch.object(az, "classify_boxes", side_effect=lambda img, boxes: [HUMAN] * len(boxes)),
         patch.object(az, "classify_image_type", return_value=PHOTO),
         patch.object(az, "predict_face_demographics", return_value=adult()),
