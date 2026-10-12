@@ -91,6 +91,20 @@ def is_valid_model_file(
     return is_valid
 
 
+def _download_file_stream(download_url: str, temp_path: Path) -> None:
+    """Download binary payload in chunks to temporary destination."""
+    req = urllib.request.Request(download_url, headers={"User-Agent": "ProfilePhotoAnalyzer/3.0"})
+    with (
+        urllib.request.urlopen(req, timeout=30) as resp,
+        open(temp_path, "wb") as f_out,
+    ):
+        while True:
+            chunk = resp.read(64 * 1024)
+            if not chunk:
+                break
+            f_out.write(chunk)
+
+
 def ensure_model_file(model_path: Path, download_url: str, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
     """Ensure that the requested ONNX model file exists locally; download atomically if missing."""
     if is_valid_model_file(model_path, min_size):
@@ -107,16 +121,7 @@ def ensure_model_file(model_path: Path, download_url: str, min_size: int = setti
     temp_path = model_path.with_suffix(f"{model_path.suffix}.tmp")
     try:
         logger.info(f"Downloading pre-trained model to {model_path} from {download_url}...")
-        req = urllib.request.Request(download_url, headers={"User-Agent": "ProfilePhotoAnalyzer/3.0"})
-        with (
-            urllib.request.urlopen(req, timeout=30) as resp,
-            open(temp_path, "wb") as f_out,
-        ):
-            while True:
-                chunk = resp.read(64 * 1024)
-                if not chunk:
-                    break
-                f_out.write(chunk)
+        _download_file_stream(download_url, temp_path)
 
         downloaded_size = temp_path.stat().st_size
         if downloaded_size < min_size:

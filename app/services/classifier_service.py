@@ -336,6 +336,83 @@ def is_cartoon_or_illustration(image_bgr: np.ndarray) -> bool:
     return bool(is_flat_palette or is_hard_outline_flat_texture)
 
 
+def _classify_via_heuristics(image: Image.Image) -> dict[str, Any]:
+    """Classify image type using resilient computer vision heuristics when CLIP is unavailable."""
+    image_rgb = image.convert("RGB")
+    arr = np.array(image_rgb)
+    arr_bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+
+    # 1. Check biological diagram
+    if is_biological_diagram_or_drawing(arr_bgr):
+        return {
+            "status": "NON_PHOTO",
+            "top_class": LABEL_DIAGRAM,
+            "top_class_confidence": 0.90,
+            "photo_score": 0.05,
+            "cartoon_score": 0.90,
+            "display_label": "Biological / Scientific Diagram",
+            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
+            "all_predictions": [
+                {"label": LABEL_DIAGRAM, "confidence": 0.90},
+                {"label": LABEL_REAL_PHOTO, "confidence": 0.05},
+            ],
+            "scores": {LABEL_DIAGRAM: 0.90, LABEL_REAL_PHOTO: 0.05},
+            "reason": "Image has high line sparsity and vector characteristics of a diagram.",
+        }
+
+    # 2. Check cartoon / digital illustration traits
+    if is_cartoon_or_illustration(arr_bgr):
+        return {
+            "status": "NON_PHOTO",
+            "top_class": LABEL_CARTOON,
+            "top_class_confidence": 0.85,
+            "photo_score": 0.10,
+            "cartoon_score": 0.85,
+            "display_label": "Cartoon / Illustrated Image",
+            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
+            "all_predictions": [
+                {"label": LABEL_CARTOON, "confidence": 0.85},
+                {"label": LABEL_REAL_PHOTO, "confidence": 0.10},
+            ],
+            "scores": {LABEL_CARTOON: 0.85, LABEL_REAL_PHOTO: 0.10},
+            "reason": "Image exhibits flat color palette and hard vector/illustration outlines.",
+        }
+
+    # 3. Fallback when CLIP is unavailable:
+    if settings.ALLOW_HEURISTIC_ACCEPTANCE:
+        return {
+            "status": "PHOTO_LIKE",
+            "top_class": LABEL_REAL_PHOTO,
+            "top_class_confidence": 0.85,
+            "photo_score": 0.85,
+            "cartoon_score": 0.15,
+            "display_label": "Real Photo (Heuristic Screened)",
+            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
+            "all_predictions": [
+                {"label": LABEL_REAL_PHOTO, "confidence": 0.85},
+                {"label": LABEL_CARTOON, "confidence": 0.15},
+            ],
+            "scores": {LABEL_REAL_PHOTO: 0.85, LABEL_CARTOON: 0.15},
+            "reason": "Image passed computer vision diagram and illustration screening heuristics.",
+        }
+
+    return {
+        "status": "NEEDS_REVIEW",
+        "top_class": LABEL_UNCERTAIN,
+        "top_class_confidence": 0.50,
+        "photo_score": 0.50,
+        "cartoon_score": 0.50,
+        "display_label": "Heuristic Screening (Review Required)",
+        "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
+        "all_predictions": [
+            {"label": LABEL_UNCERTAIN, "confidence": 0.50},
+            {"label": LABEL_REAL_PHOTO, "confidence": 0.50},
+        ],
+        "scores": {LABEL_UNCERTAIN: 0.50, LABEL_REAL_PHOTO: 0.50},
+        "reason": "Zero-shot neural classifier (CLIP) unavailable; heuristic screening requires manual review.",
+    }
+
+
 def classify_image_type(image: Image.Image) -> dict[str, Any]:
     """
     Classify whether image is a real photo, cartoon, anime, 3D character, diagram, or object.
@@ -344,79 +421,7 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
     pipeline_fn = get_clip_pipeline()
 
     if pipeline_fn is None:
-        image_rgb = image.convert("RGB")
-        arr = np.array(image_rgb)
-        arr_bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-
-        # 1. Check biological diagram
-        if is_biological_diagram_or_drawing(arr_bgr):
-            return {
-                "status": "NON_PHOTO",
-                "top_class": LABEL_DIAGRAM,
-                "top_class_confidence": 0.90,
-                "photo_score": 0.05,
-                "cartoon_score": 0.90,
-                "display_label": "Biological / Scientific Diagram",
-                "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
-                "all_predictions": [
-                    {"label": LABEL_DIAGRAM, "confidence": 0.90},
-                    {"label": LABEL_REAL_PHOTO, "confidence": 0.05},
-                ],
-                "scores": {LABEL_DIAGRAM: 0.90, LABEL_REAL_PHOTO: 0.05},
-                "reason": "Image has high line sparsity and vector characteristics of a diagram.",
-            }
-
-        # 2. Check cartoon / digital illustration traits
-        if is_cartoon_or_illustration(arr_bgr):
-            return {
-                "status": "NON_PHOTO",
-                "top_class": LABEL_CARTOON,
-                "top_class_confidence": 0.85,
-                "photo_score": 0.10,
-                "cartoon_score": 0.85,
-                "display_label": "Cartoon / Illustrated Image",
-                "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
-                "all_predictions": [
-                    {"label": LABEL_CARTOON, "confidence": 0.85},
-                    {"label": LABEL_REAL_PHOTO, "confidence": 0.10},
-                ],
-                "scores": {LABEL_CARTOON: 0.85, LABEL_REAL_PHOTO: 0.10},
-                "reason": "Image exhibits flat color palette and hard vector/illustration outlines.",
-            }
-
-        # 3. Fallback when CLIP is unavailable:
-        if settings.ALLOW_HEURISTIC_ACCEPTANCE:
-            return {
-                "status": "PHOTO_LIKE",
-                "top_class": LABEL_REAL_PHOTO,
-                "top_class_confidence": 0.85,
-                "photo_score": 0.85,
-                "cartoon_score": 0.15,
-                "display_label": "Real Photo (Heuristic Screened)",
-                "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
-                "all_predictions": [
-                    {"label": LABEL_REAL_PHOTO, "confidence": 0.85},
-                    {"label": LABEL_CARTOON, "confidence": 0.15},
-                ],
-                "scores": {LABEL_REAL_PHOTO: 0.85, LABEL_CARTOON: 0.15},
-                "reason": "Image passed computer vision diagram and illustration screening heuristics.",
-            }
-
-        return {
-            "status": "NEEDS_REVIEW",
-            "top_class": LABEL_UNCERTAIN,
-            "top_class_confidence": 0.50,
-            "photo_score": 0.50,
-            "cartoon_score": 0.50,
-            "display_label": "Heuristic Screening (Review Required)",
-            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
-            "all_predictions": [
-                {"label": LABEL_UNCERTAIN, "confidence": 0.50},
-                {"label": LABEL_REAL_PHOTO, "confidence": 0.50},
-            ],
-            "scores": {LABEL_UNCERTAIN: 0.50, LABEL_REAL_PHOTO: 0.50},
-            "reason": "Zero-shot neural classifier (CLIP) unavailable; heuristic screening requires manual review.",
-        }
+        return _classify_via_heuristics(image)
 
     try:
         raw_predictions = pipeline_fn(image.convert("RGB"), candidate_labels=IMAGE_LABELS)
