@@ -2,7 +2,7 @@ import io
 import logging
 import time
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional, Tuple
 from fastapi import APIRouter, File, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from PIL import Image
@@ -40,15 +40,9 @@ def health():
     }
 
 
-@router.post("/analyze-profile-photo")
-def analyze_profile_photo(file: Annotated[UploadFile, File()]):
-    """
-    Synchronous route handler executed on thread pool to avoid blocking async event loop.
-    Validates file format, size, decodes image, and runs the end-to-end analyzer.
-    """
-    filename = file.filename or "upload.jpg"
+def _validate_upload_extension(filename: str) -> Optional[JSONResponse]:
+    """Validate that filename has an allowed extension."""
     extension = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-
     if extension not in settings.ALLOWED_EXTENSIONS:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -57,48 +51,42 @@ def analyze_profile_photo(file: Annotated[UploadFile, File()]):
                 "reason": f"Only {', '.join(sorted(settings.ALLOWED_EXTENSIONS))} files are allowed."
             }
         )
+    return None
 
-    # Read uploaded bytes with size limit guard
+
+def _read_and_validate_upload_bytes(file: UploadFile) -> Tuple[Optional[bytes], Optional[JSONResponse]]:
+    """Read upload contents and validate file size limits."""
     contents = file.file.read(settings.MAX_UPLOAD_BYTES + 1)
-
     if not contents:
-        return JSONResponse(
+        return None, JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "accepted": False,
-                "reason": "The uploaded file is empty."
-            }
+            content={"accepted": False, "reason": "The uploaded file is empty."}
         )
-
     if len(contents) > settings.MAX_UPLOAD_BYTES:
         max_mb = settings.MAX_UPLOAD_BYTES // (1024 * 1024)
-        return JSONResponse(
+        return None, JSONResponse(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            content={
-                "accepted": False,
-                "reason": f"Maximum upload size is {max_mb} MB."
-            }
+            content={"accepted": False, "reason": f"Maximum upload size is {max_mb} MB."}
         )
+    return contents, None
 
-    start_time = time.perf_counter()
 
+def _decode_and_validate_image(contents: bytes) -> Tuple[Optional[Image.Image], Optional[str], Optional[JSONResponse]]:
+    """Verify magic bytes and decode PIL image with dimension limits."""
     try:
         format_detected = sniff_image_magic_bytes(contents)
     except ValueError as exc:
         logger.warning("Magic bytes validation failed: %s", exc)
-        return JSONResponse(
+        return None, None, JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "accepted": False,
-                "reason": str(exc)
-            }
+            content={"accepted": False, "reason": str(exc)}
         )
 
     try:
         Image.MAX_IMAGE_PIXELS = settings.MAX_IMAGE_PIXELS
         image = Image.open(io.BytesIO(contents))
         if image.width > settings.MAX_IMAGE_DIMENSION or image.height > settings.MAX_IMAGE_DIMENSION:
-            return JSONResponse(
+            return None, None, JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={
                     "accepted": False,
@@ -106,7 +94,7 @@ def analyze_profile_photo(file: Annotated[UploadFile, File()]):
                 }
             )
         if (image.width * image.height) > settings.MAX_IMAGE_PIXELS:
-            return JSONResponse(
+            return None, None, JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={
                     "accepted": False,
@@ -114,16 +102,34 @@ def analyze_profile_photo(file: Annotated[UploadFile, File()]):
                 }
             )
         image.load()
-        image = image.convert("RGB")
+        return image.convert("RGB"), format_detected, None
     except (OSError, ValueError) as exc:
         logger.warning("Failed to decode image: %s", exc)
-        return JSONResponse(
+        return None, None, JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={
-                "accepted": False,
-                "reason": "The uploaded file is not a valid supported image."
-            }
+            content={"accepted": False, "reason": "The uploaded file is not a valid supported image."}
         )
+
+
+@router.post("/analyze-profile-photo")
+def analyze_profile_photo(file: Annotated[UploadFile, File()]):
+    """
+    Synchronous route handler executed on thread pool to avoid blocking async event loop.
+    Validates file format, size, decodes image, and runs the end-to-end analyzer.
+    """
+    filename = file.filename or "upload.jpg"
+    ext_err = _validate_upload_extension(filename)
+    if ext_err is not None:
+        return ext_err
+
+    contents, size_err = _read_and_validate_upload_bytes(file)
+    if size_err is not None or contents is None:
+        return size_err
+
+    start_time = time.perf_counter()
+    image, format_detected, decode_err = _decode_and_validate_image(contents)
+    if decode_err is not None or image is None or format_detected is None:
+        return decode_err
 
     try:
         result = analyze_profile_photo_image(image, filename=filename, format_detected=format_detected)

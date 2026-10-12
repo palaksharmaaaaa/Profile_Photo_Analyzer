@@ -41,6 +41,13 @@ NO_INFO_REASON = "This image has no information to check or process (blank or so
 NO_FACE_DETECTED = "No face detected."
 DEFAULT_IMAGE_FORMAT = "image/jpeg"
 
+MODEL_YUNET = "YuNet Face Detector (2023mar)"
+MODEL_GENDERAGE = "InsightFace GenderAge (multitask CNN)"
+MODEL_ANIME_FACE = "DeepGHS Anime Face Detector (v1.4n)"
+MODEL_YOLO = "Ultralytics YOLOv8n (COCO)"
+MODEL_INFO_ANALYZER = "Image Information & Entropy Analyzer"
+MODEL_SCREENING = "Resilient Image Screening / CLIP"
+
 
 def _determine_step3_status(info_ok: bool, human_count: int) -> str:
     """Helper to determine step 3 status without nested conditionals."""
@@ -104,10 +111,10 @@ def _build_technical_diagnostics(
 ) -> Dict[str, Any]:
     """Generate technical metadata and computer vision model diagnostics."""
     default_models = [
-        "YuNet Face Detector (2023mar)",
-        "InsightFace GenderAge (multitask CNN)",
-        "DeepGHS Anime Face Detector (v1.4n)",
-        "Ultralytics YOLOv8n (COCO)"
+        MODEL_YUNET,
+        MODEL_GENDERAGE,
+        MODEL_ANIME_FACE,
+        MODEL_YOLO
     ]
     return {
         "processing_time_ms": 0.0,
@@ -142,7 +149,7 @@ def _handle_no_info(
     )
     diagnostics = _build_technical_diagnostics(
         width, height, format_detected, info_check,
-        models_executed=["Image Information & Entropy Analyzer"]
+        models_executed=[MODEL_INFO_ANALYZER]
     )
 
     return {
@@ -224,11 +231,11 @@ def _handle_no_human_faces(
         demographics_detail=""
     )
     executed = [
-        "Image Information & Entropy Analyzer",
-        "Resilient Image Screening / CLIP",
-        "DeepGHS Anime Face Detector (v1.4n)",
-        "Ultralytics YOLOv8n (COCO)",
-        "YuNet Face Detector (2023mar)"
+        MODEL_INFO_ANALYZER,
+        MODEL_SCREENING,
+        MODEL_ANIME_FACE,
+        MODEL_YOLO,
+        MODEL_YUNET
     ]
     diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check, executed)
 
@@ -303,14 +310,14 @@ def _handle_multiple_human_faces(
         demographics_detail=""
     )
     executed = [
-        "Image Information & Entropy Analyzer",
-        "Resilient Image Screening / CLIP",
-        "DeepGHS Anime Face Detector (v1.4n)",
-        "Ultralytics YOLOv8n (COCO)",
-        "YuNet Face Detector (2023mar)"
+        MODEL_INFO_ANALYZER,
+        MODEL_SCREENING,
+        MODEL_ANIME_FACE,
+        MODEL_YOLO,
+        MODEL_YUNET
     ]
     if not non_photo:
-        executed.append("InsightFace GenderAge (multitask CNN)")
+        executed.append(MODEL_GENDERAGE)
     diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check, executed)
 
     return {
@@ -619,14 +626,14 @@ def analyze_profile_photo_image(
         demographics_detail=f"Estimated age group: {age_label}, Gender: {gender_pred}."
     )
     executed = [
-        "Image Information & Entropy Analyzer",
-        "Resilient Image Screening / CLIP",
-        "DeepGHS Anime Face Detector (v1.4n)",
-        "Ultralytics YOLOv8n (COCO)",
-        "YuNet Face Detector (2023mar)"
+        MODEL_INFO_ANALYZER,
+        MODEL_SCREENING,
+        MODEL_ANIME_FACE,
+        MODEL_YOLO,
+        MODEL_YUNET
     ]
     if not non_photo:
-        executed.append("InsightFace GenderAge (multitask CNN)")
+        executed.append(MODEL_GENDERAGE)
     diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check, executed)
 
     return {
