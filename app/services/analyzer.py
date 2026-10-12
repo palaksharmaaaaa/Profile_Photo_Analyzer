@@ -10,54 +10,69 @@ from app.services.image_utils import (
     clamp_box,
     annotate_faces,
 )
-from app.services.classifier_service import classify_image_type
-from app.services.quality_service import assess_face_quality
+from app.services.quality_service import (
+    assess_face_quality,
+    check_image_information
+)
+from app.services.classifier_service import (
+    classify_image_type,
+    detect_non_human_entities,
+    check_is_non_human_face,
+)
 from app.services.face_service import (
     detect_faces,
-    extract_face_attributes,
+    predict_face_demographics,
     possible_minor_age_group,
     NOT_AVAILABLE,
+    NOT_DETECTED,
 )
 
 logger = logging.getLogger(__name__)
 
 COLOR_ORANGE = (0, 140, 255)  # BGR
 COLOR_GREEN = (0, 180, 0)     # BGR
+COLOR_PURPLE = (200, 50, 180) # BGR
 
 MULTIPLE_FACES_REASON = "A profile photo must contain exactly one detected face."
 MULTIPLE_FACES_NOTE = "Multiple faces detected."
+NO_INFO_REASON = "This image has no information to check or process (blank or solid color)."
+NO_FACE_DETECTED = "No face detected."
 
 
-def _handle_no_faces(
+def _handle_no_info(
     image_bgr: np.ndarray,
+    info_check: Dict[str, Any],
     image_type: Dict[str, Any],
-    type_warning: str,
-    non_photo: bool,
     filename: Optional[str]
 ) -> Dict[str, Any]:
-    """Generate rejection payload when zero faces are detected."""
-    posting_status = "NON_PHOTO_WARNING" if non_photo else "REJECTED"
-    reason = ((type_warning + " ") if type_warning else "") + "No human face was detected."
+    """Generate response when image contains no visual information."""
     img_b64 = bgr_to_base64_jpeg(image_bgr)
     return {
         "accepted": False,
-        "posting_status": posting_status,
-        "posting_reason": reason,
-        "reason": reason,
+        "posting_status": "NO_INFORMATION",
+        "posting_reason": NO_INFO_REASON,
+        "reason": NO_INFO_REASON,
+        "has_information": False,
+        "image_info_check": info_check,
         "image_type_check": image_type,
-        "image_type_review_required": non_photo,
+        "image_type_review_required": True,
         "face_detected": False,
+        "total_face_count": 0,
+        "real_human_face_count": 0,
+        "other_face_count": 0,
+        "human_faces": [],
+        "other_faces": [],
         "face_count": 0,
         "face_visibility": None,
-        "estimated_age_group": NOT_AVAILABLE,
+        "estimated_age_group": NOT_DETECTED,
         "age_model_confidence": None,
-        "age_note": "No face detected to estimate age.",
-        "age_prediction_error": "No face detected.",
+        "age_note": "No face detected in blank image.",
+        "age_prediction_error": NO_FACE_DETECTED,
         "possible_minor_risk": False,
         "age_verification_required": True,
-        "gender_presentation_prediction": NOT_AVAILABLE,
-        "gender_note": "No face detected to estimate gender.",
-        "gender_prediction_error": "No face detected.",
+        "gender_presentation_prediction": NOT_DETECTED,
+        "gender_note": NO_FACE_DETECTED,
+        "gender_prediction_error": NO_FACE_DETECTED,
         "face_detection_confidence": None,
         "face_box_xyxy": None,
         "face_regions_xyxy": [],
@@ -65,30 +80,93 @@ def _handle_no_faces(
         "original_image": img_b64,
         "annotated_image": img_b64,
         "filename": filename,
-        "region_note": "No face region could be located. The original uploaded photo is shown for review.",
+        "region_note": "No visual information or structure was found in this image.",
+        "note": "Please upload an authentic photograph with sufficient lighting, contrast, and visual content."
+    }
+
+
+def _handle_no_human_faces(
+    image_bgr: np.ndarray,
+    info_check: Dict[str, Any],
+    image_type: Dict[str, Any],
+    other_faces: List[Dict[str, Any]],
+    type_warning: str,
+    non_photo: bool,
+    filename: Optional[str]
+) -> Dict[str, Any]:
+    """Generate rejection payload when zero real human faces are detected."""
+    other_count = len(other_faces)
+    if other_count > 0:
+        posting_status = "NON_PHOTO_WARNING"
+        types_summary = ", ".join(sorted({f["label"] for f in other_faces}))
+        reason = f"{type_warning} No real human face was detected. Found {other_count} other face(s) ({types_summary}).".strip()
+        region_note = f"Found {other_count} non-human face(s): {types_summary}. Profile photos must contain a real human face."
+        boxes = [f["box_xyxy"] for f in other_faces]
+        annotated = annotate_faces(image_bgr, boxes, "NON-HUMAN FACE", COLOR_PURPLE)
+    else:
+        posting_status = "NON_PHOTO_WARNING" if non_photo else "REJECTED"
+        reason = ((type_warning + " ") if type_warning else "") + "No human face was detected."
+        region_note = "No face region could be located. The original uploaded photo is shown for review."
+        annotated = image_bgr
+
+    img_b64 = bgr_to_base64_jpeg(image_bgr)
+    annot_b64 = bgr_to_base64_jpeg(annotated)
+
+    return {
+        "accepted": False,
+        "posting_status": posting_status,
+        "posting_reason": reason,
+        "reason": reason,
+        "has_information": True,
+        "image_info_check": info_check,
+        "image_type_check": image_type,
+        "image_type_review_required": non_photo or (other_count > 0),
+        "face_detected": other_count > 0,
+        "total_face_count": other_count,
+        "real_human_face_count": 0,
+        "other_face_count": other_count,
+        "human_faces": [],
+        "other_faces": other_faces,
+        "face_count": 0,
+        "face_visibility": None,
+        "estimated_age_group": NOT_AVAILABLE,
+        "age_model_confidence": None,
+        "age_note": "No face detected to estimate age.",
+        "age_prediction_error": NO_FACE_DETECTED,
+        "possible_minor_risk": False,
+        "age_verification_required": True,
+        "gender_presentation_prediction": NOT_AVAILABLE,
+        "gender_note": "No face detected to estimate gender.",
+        "gender_prediction_error": NO_FACE_DETECTED,
+        "face_detection_confidence": None,
+        "face_box_xyxy": None,
+        "face_regions_xyxy": [f["box_xyxy"] for f in other_faces],
+        "age_gender_prediction_performed": False,
+        "original_image": img_b64,
+        "annotated_image": annot_b64,
+        "filename": filename,
+        "region_note": region_note,
         "note": "A clear, well-lit portrait with a single human face is required for profile photos."
     }
 
 
-def _handle_multiple_faces(
+def _handle_multiple_human_faces(
     image_bgr: np.ndarray,
-    detected_faces: List[Any],
+    info_check: Dict[str, Any],
     image_type: Dict[str, Any],
+    human_faces: List[Dict[str, Any]],
+    other_faces: List[Dict[str, Any]],
     type_warning: str,
     non_photo: bool,
-    width: int,
-    height: int,
     filename: Optional[str]
 ) -> Dict[str, Any]:
-    """Generate rejection payload when multiple faces are detected."""
-    face_count = len(detected_faces)
+    """Generate rejection payload when multiple real human faces are detected."""
+    human_count = len(human_faces)
+    total_count = human_count + len(other_faces)
     posting_status = "NON_PHOTO_WARNING" if non_photo else "REJECTED"
     reason = ((type_warning + " ") if type_warning else "") + MULTIPLE_FACES_REASON
 
-    boxes = [
-        list(clamp_box([int(v) for v in f.bbox], width, height))
-        for f in detected_faces
-    ]
+    boxes = [f["box_xyxy"] for f in human_faces]
     annotated = annotate_faces(image_bgr, boxes, "MULTIPLE FACES", COLOR_ORANGE)
 
     return {
@@ -96,10 +174,17 @@ def _handle_multiple_faces(
         "posting_status": posting_status,
         "posting_reason": reason,
         "reason": reason,
+        "has_information": True,
+        "image_info_check": info_check,
         "image_type_check": image_type,
-        "image_type_review_required": non_photo,
+        "image_type_review_required": non_photo or len(other_faces) > 0,
         "face_detected": True,
-        "face_count": face_count,
+        "total_face_count": total_count,
+        "real_human_face_count": human_count,
+        "other_face_count": len(other_faces),
+        "human_faces": human_faces,
+        "other_faces": other_faces,
+        "face_count": human_count,
         "face_visibility": None,
         "estimated_age_group": NOT_AVAILABLE,
         "age_model_confidence": None,
@@ -110,63 +195,178 @@ def _handle_multiple_faces(
         "gender_presentation_prediction": NOT_AVAILABLE,
         "gender_note": MULTIPLE_FACES_NOTE,
         "gender_prediction_error": MULTIPLE_FACES_NOTE,
-        "face_detection_confidence": round(float(detected_faces[0].det_score), 4) if hasattr(detected_faces[0], "det_score") else None,
+        "face_detection_confidence": human_faces[0]["detection_confidence"] if human_faces else None,
         "face_box_xyxy": boxes[0] if boxes else None,
         "face_regions_xyxy": boxes,
         "age_gender_prediction_performed": False,
         "original_image": bgr_to_base64_jpeg(image_bgr),
         "annotated_image": bgr_to_base64_jpeg(annotated),
         "filename": filename,
-        "region_note": f"Found {face_count} faces in image. Profile photos must contain only one face.",
+        "region_note": f"Found {human_count} faces in image. Profile photos must contain only one face.",
         "note": "A profile photo must contain exactly one person."
     }
 
 
-def _extract_attributes_safely(face: Any, non_photo: bool) -> Tuple[str, Optional[float], Optional[str], str, Optional[str], bool]:
-    """Safely extract age and gender attributes when appropriate."""
+def _separate_faces(
+    raw_faces: List[Any],
+    image_bgr: np.ndarray,
+    non_human_entities: List[Dict[str, Any]],
+    width: int,
+    height: int
+) -> Tuple[List[Tuple[Any, List[int]]], List[Dict[str, Any]]]:
+    """Separate candidate faces into real human candidates and non-human entities."""
+    real_human_raw: List[Tuple[Any, List[int]]] = []
+    other_faces_list: List[Dict[str, Any]] = []
+    other_face_counter = 1
+
+    for face in raw_faces:
+        raw_box = [int(v) for v in getattr(face, "bbox", [0, 0, width, height])]
+        box = list(clamp_box(raw_box, width, height))
+
+        non_human_match = check_is_non_human_face(box, image_bgr, non_human_entities)
+        if non_human_match is not None:
+            non_human_match["face_id"] = other_face_counter
+            other_face_counter += 1
+            other_faces_list.append(non_human_match)
+        else:
+            real_human_raw.append((face, box))
+
+    for ent in non_human_entities:
+        ent_box = ent["box_xyxy"]
+        if not any(f["box_xyxy"] == ent_box for f in other_faces_list):
+            ent_copy = dict(ent)
+            ent_copy["face_id"] = other_face_counter
+            other_face_counter += 1
+            other_faces_list.append(ent_copy)
+
+    return real_human_raw, other_faces_list
+
+
+def _build_human_face_items(
+    real_human_raw: List[Tuple[Any, List[int]]],
+    image_bgr: np.ndarray,
+    non_photo: bool
+) -> List[Dict[str, Any]]:
+    """Build detailed analysis items for all detected real human faces."""
+    items: List[Dict[str, Any]] = []
+    for face_idx, (face_obj, box) in enumerate(real_human_raw, start=1):
+        landmarks = getattr(face_obj, "kps", None)
+        visibility = assess_face_quality(image_bgr, box, landmarks)
+        det_score = round(float(getattr(face_obj, "det_score", 0.95)), 4) if hasattr(face_obj, "det_score") else 0.95
+
+        try:
+            if non_photo:
+                age_grp, est_age, age_conf = NOT_AVAILABLE, None, None
+                gender_str, gender_conf = NOT_AVAILABLE, None
+            else:
+                age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(
+                    image_bgr, box, face_obj
+                )
+        except Exception:
+            logger.exception("Demographic extraction error")
+            age_grp, est_age, age_conf = NOT_AVAILABLE, None, None
+            gender_str, gender_conf = NOT_AVAILABLE, None
+
+        minor_risk = possible_minor_age_group(age_grp) if age_grp not in (NOT_AVAILABLE, NOT_DETECTED, "Unsure") else False
+
+        items.append({
+            "face_id": face_idx,
+            "box_xyxy": box,
+            "detection_confidence": det_score,
+            "gender": gender_str,
+            "gender_confidence": gender_conf,
+            "age_group": age_grp,
+            "estimated_age": est_age,
+            "age_confidence": age_conf,
+            "possible_minor_risk": minor_risk,
+            "face_visibility": visibility,
+            "is_primary": (face_idx == 1)
+        })
+    return items
+
+
+def _resolve_attribute_errors(
+    age_label: str,
+    gender_pred: str,
+    non_photo: bool
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve human-readable error messages for demographic estimation."""
     if non_photo:
-        return (
-            NOT_AVAILABLE,
-            None,
-            "Skipped because the image appears to be a non-photo image.",
-            NOT_AVAILABLE,
-            "Skipped because the image appears to be a non-photo image.",
-            False
-        )
+        age_error = "Skipped because the image appears to be a non-photo image."
+    elif age_label in (NOT_AVAILABLE, NOT_DETECTED):
+        age_error = "Age model could not estimate the age group."
+    else:
+        age_error = None
 
-    try:
-        age_label, age_confidence, gender_prediction = extract_face_attributes(face)
-        age_error = "Age model could not estimate the age group." if age_label == NOT_AVAILABLE else None
-        gender_error = "Gender prediction was unavailable." if gender_prediction == NOT_AVAILABLE else None
-        minor_risk = possible_minor_age_group(age_label) if age_label not in (NOT_AVAILABLE, "Not performed") else False
-        return age_label, age_confidence, age_error, gender_prediction, gender_error, minor_risk
-    except Exception:
-        logger.exception("Error extracting face attributes")
-        return NOT_AVAILABLE, None, "Attribute extraction failed.", NOT_AVAILABLE, "Attribute extraction failed.", False
+    if non_photo:
+        gender_error = "Skipped because the image appears to be a non-photo image."
+    elif gender_pred in (NOT_AVAILABLE, NOT_DETECTED):
+        gender_error = "Gender prediction was unavailable."
+    else:
+        gender_error = None
+
+    return age_error, gender_error
 
 
-def _determine_posting_decision(
+
+def _determine_single_face_decision(
     non_photo: bool,
-    type_warning: str,
+    other_count: int,
+    other_labels: str,
     visibility_status: str,
     visibility_reason: str,
     age_label: str,
-    minor_risk: bool
+    minor_risk: bool,
+    type_warning: str
 ) -> Tuple[bool, str, str]:
-    """Determine acceptance boolean, posting status, and detailed reason string."""
+    """Determine acceptance and status code for a single human face."""
     if non_photo:
         return (
             False,
             "NON_PHOTO_WARNING",
             f"{type_warning} Face detection found one face. Age and gender estimates on illustrations or computer-generated characters are unreliable."
         )
+    if other_count > 0:
+        return (
+            False,
+            "NON_PHOTO_WARNING",
+            f"One human face detected, but image also contains {other_count} non-human face(s) ({other_labels})."
+        )
     if visibility_status != "LIKELY_COMPLETE":
         return False, "REJECTED_OR_REVIEW", f"{visibility_reason} Please provide a clear, centered, uncropped photo."
-    if age_label == NOT_AVAILABLE:
+    if age_label in (NOT_AVAILABLE, NOT_DETECTED):
         return False, "AGE_ESTIMATION_UNAVAILABLE", "The face was detected, but age group could not be estimated. Please try a clear, front-facing photograph."
     if minor_risk:
         return False, "AGE_VERIFICATION_REQUIRED", f"The estimated age group is {age_label}. This range may include minors under 18. Age verification is required."
     return True, "INITIAL_CHECKS_PASSED", f"All checks passed. Estimated age group is {age_label}."
+
+
+def _render_annotation(
+    image_bgr: np.ndarray,
+    face_box: List[int],
+    other_faces_list: List[Dict[str, Any]],
+    accepted: bool,
+    minor_risk: bool,
+    posting_status: str,
+    age_label: str
+) -> str:
+    """Render bounding boxes and return Base64-encoded JPEG."""
+    box_color = COLOR_GREEN if accepted else COLOR_ORANGE
+    if accepted:
+        box_label = "FACE DETECTED"
+    elif minor_risk:
+        box_label = f"AGE GROUP: {age_label}"
+    elif posting_status == "NON_PHOTO_WARNING":
+        box_label = "WARNING: NON-PHOTO IMAGE"
+    else:
+        box_label = "REVIEW REQUIRED"
+
+    annotated = annotate_faces(image_bgr, [face_box], box_label, box_color)
+    if other_faces_list:
+        other_boxes = [f["box_xyxy"] for f in other_faces_list]
+        annotated = annotate_faces(annotated, other_boxes, "NON-HUMAN FACE", COLOR_PURPLE)
+
+    return bgr_to_base64_jpeg(annotated)
 
 
 def analyze_profile_photo_image(
@@ -174,78 +374,89 @@ def analyze_profile_photo_image(
     filename: Optional[str] = "profile.jpg"
 ) -> Dict[str, Any]:
     """
-    Complete end-to-end profile photo analysis pipeline without duplicate inference.
+    Complete end-to-end profile photo analysis pipeline:
+    1. Information & Blank/Solid Image Check
+    2. Image Type Screening
+    3. Multi-Face & Non-Human Entity Detection (Animal, Bird, Cartoon, Diagram)
+    4. Demographic Analysis for All Real Human Faces (3-Year Age Buckets)
+    5. Authentic Verification (No Fabrication, 'Unsure' / 'Not Detected' Handling)
     """
     image = image.convert("RGB")
     image_bgr = pil_to_bgr(image)
     height, width = image_bgr.shape[:2]
 
-    # 1. Screen image type
+    # 1. Information / Entropy / Blank check
+    info_check = check_image_information(image_bgr)
     image_type = classify_image_type(image)
+
+    if not info_check["has_information"]:
+        return _handle_no_info(image_bgr, info_check, image_type, filename)
+
     non_photo = image_type.get("status") == "NON_PHOTO"
     type_warning = (
         f"Warning: this looks like a non-photo image ({image_type.get('display_label', 'Non-photo')}), not a real photograph."
         if non_photo else ""
     )
 
-    # 2. Detect faces
-    detected_faces = detect_faces(image_bgr)
-    face_count = len(detected_faces)
+    # 2. Multi-Entity and Face Detection
+    non_human_entities = detect_non_human_entities(image_bgr)
+    raw_faces = detect_faces(image_bgr)
+    real_human_raw, other_faces_list = _separate_faces(raw_faces, image_bgr, non_human_entities, width, height)
 
-    if face_count == 0:
-        return _handle_no_faces(image_bgr, image_type, type_warning, non_photo, filename)
+    real_human_count = len(real_human_raw)
+    if real_human_count == 0:
+        return _handle_no_human_faces(
+            image_bgr, info_check, image_type, other_faces_list, type_warning, non_photo, filename
+        )
 
-    if face_count > 1:
-        return _handle_multiple_faces(image_bgr, detected_faces, image_type, type_warning, non_photo, width, height, filename)
+    # 3. Demographics for all real human faces
+    human_faces_list = _build_human_face_items(real_human_raw, image_bgr, non_photo)
+    if real_human_count > 1:
+        return _handle_multiple_human_faces(
+            image_bgr, info_check, image_type, human_faces_list, other_faces_list, type_warning, non_photo, filename
+        )
 
-    # 3. Single face quality analysis
-    face = detected_faces[0]
-    raw_bbox = [int(v) for v in getattr(face, "bbox", [0, 0, width, height])]
-    face_box = list(clamp_box(raw_bbox, width, height))
-    landmarks = getattr(face, "kps", None)
-    visibility = assess_face_quality(image_bgr, face_box, landmarks)
+    # 4. Single real human face evaluation
+    primary = human_faces_list[0]
+    face_box = primary["box_xyxy"]
+    visibility = primary["face_visibility"]
+    age_label = primary["age_group"]
+    gender_pred = primary["gender"]
+    minor_risk = primary["possible_minor_risk"]
 
-    # 4. Demographic attributes
-    age_label, age_confidence, age_error, gender_pred, gender_error, minor_risk = _extract_attributes_safely(face, non_photo)
+    age_error, gender_error = _resolve_attribute_errors(age_label, gender_pred, non_photo)
 
-    # 5. Decision logic
-    accepted, posting_status, posting_reason = _determine_posting_decision(
-        non_photo,
-        type_warning,
-        visibility["status"],
-        visibility["reason"],
-        age_label,
-        minor_risk
+    other_count = len(other_faces_list)
+    other_labels = ", ".join(sorted({f["label"] for f in other_faces_list}))
+
+    accepted, posting_status, posting_reason = _determine_single_face_decision(
+        non_photo, other_count, other_labels, visibility["status"], visibility["reason"],
+        age_label, minor_risk, type_warning
     )
 
-    # 6. Preview annotation
-    det_score = round(float(getattr(face, "det_score", 0.95)), 4) if hasattr(face, "det_score") else 0.95
-    box_color = COLOR_GREEN if accepted else COLOR_ORANGE
-
-    if accepted:
-        box_label = "FACE DETECTED"
-    elif minor_risk:
-        box_label = f"AGE GROUP: {age_label}"
-    else:
-        box_label = "REVIEW REQUIRED"
-
-    if posting_status == "NON_PHOTO_WARNING":
-        box_label = "WARNING: NON-PHOTO IMAGE"
-
-    annotated = annotate_faces(image_bgr, [face_box], box_label, box_color)
+    annot_b64 = _render_annotation(
+        image_bgr, face_box, other_faces_list, accepted, minor_risk, posting_status, age_label
+    )
 
     return {
         "accepted": accepted,
         "posting_status": posting_status,
         "posting_reason": posting_reason,
         "reason": posting_reason,
+        "has_information": True,
+        "image_info_check": info_check,
         "image_type_check": image_type,
-        "image_type_review_required": non_photo,
+        "image_type_review_required": non_photo or other_count > 0,
         "face_detected": True,
+        "total_face_count": 1 + other_count,
+        "real_human_face_count": 1,
+        "other_face_count": other_count,
+        "human_faces": human_faces_list,
+        "other_faces": other_faces_list,
         "face_count": 1,
         "face_visibility": visibility,
         "estimated_age_group": age_label,
-        "age_model_confidence": age_confidence,
+        "age_model_confidence": primary["age_confidence"],
         "age_note": "Appearance-based demographic estimate only; not confirmed proof of legal age." if not age_error else age_error,
         "age_prediction_error": age_error,
         "possible_minor_risk": minor_risk,
@@ -253,12 +464,12 @@ def analyze_profile_photo_image(
         "gender_presentation_prediction": gender_pred,
         "gender_note": "Appearance-based model prediction only; not a confirmed gender identity." if not gender_error else gender_error,
         "gender_prediction_error": gender_error,
-        "face_detection_confidence": det_score,
+        "face_detection_confidence": primary["detection_confidence"],
         "face_box_xyxy": face_box,
         "face_regions_xyxy": [face_box],
-        "age_gender_prediction_performed": not non_photo and age_label != NOT_AVAILABLE,
+        "age_gender_prediction_performed": not non_photo and age_label not in (NOT_AVAILABLE, NOT_DETECTED),
         "original_image": bgr_to_base64_jpeg(image_bgr),
-        "annotated_image": bgr_to_base64_jpeg(annotated),
+        "annotated_image": annot_b64,
         "filename": filename,
         "region_note": "The outlined area indicates the detected face region.",
         "note": "Age and quality estimates are approximate appearance indicators. Maintain a separate KYC/age-verification workflow for strict compliance."

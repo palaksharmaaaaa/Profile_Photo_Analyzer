@@ -121,3 +121,35 @@ def test_quality_service_landmarks_malformed_shape():
     assert result["status"] == "UNCERTAIN"
     assert result["landmarks_inside_image"] is False
 
+
+def test_check_image_information_valid():
+    from app.services.quality_service import check_image_information
+    img = np.random.randint(20, 220, (100, 100, 3), dtype=np.uint8)
+    res = check_image_information(img)
+    assert res["has_information"] is True
+    assert res["entropy"] > 0.5
+
+
+def test_check_image_information_blank_or_solid():
+    from app.services.quality_service import check_image_information
+    blank = np.zeros((100, 100, 3), dtype=np.uint8)
+    res = check_image_information(blank)
+    assert res["has_information"] is False
+    assert "no visual information" in res["reason"]
+
+    solid = np.full((100, 100, 3), (120, 120, 120), dtype=np.uint8)
+    res_solid = check_image_information(solid)
+    assert res_solid["has_information"] is False
+
+
+def test_check_image_information_empty():
+    from app.services.quality_service import check_image_information
+    empty = np.zeros((0, 0, 3), dtype=np.uint8)
+    res = check_image_information(empty)
+    assert res["has_information"] is False
+    assert res["entropy"] == 0.0
+
+    none_res = check_image_information(None)
+    assert none_res["has_information"] is False
+
+

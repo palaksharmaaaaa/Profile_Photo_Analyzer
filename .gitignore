@@ -22,3 +22,6 @@ htmlcov/
 # SonarQube Scanner
 .scannerwork/
 .sonar/
+
+# Model binaries
+models/*.onnx

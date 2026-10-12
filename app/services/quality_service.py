@@ -5,6 +5,53 @@ from app.core.config import settings
 from app.services.image_utils import clamp_box
 
 
+def check_image_information(image_bgr: np.ndarray) -> Dict[str, Any]:
+    """
+    Check if the image contains any real visual information vs blank,
+    solid color, or uniform tone with zero entropy/structure.
+    """
+    if image_bgr is None or image_bgr.size == 0:
+        return {
+            "has_information": False,
+            "entropy": 0.0,
+            "std_dev": 0.0,
+            "laplacian_var": 0.0,
+            "reason": "Image has no data or dimensions."
+        }
+
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    std_val = float(np.std(gray))
+
+    # Shannon Entropy calculation
+    hist, _ = np.histogram(gray, bins=256, range=(0, 256), density=True)
+    hist = hist[hist > 0]
+    entropy = float(-np.sum(hist * np.log2(hist))) if len(hist) > 0 else 0.0
+
+    # Edge / Laplacian variance
+    lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    unique_vals = len(np.unique(gray))
+
+    is_solid = (
+        std_val < settings.MIN_IMAGE_STD_DEV
+        or entropy < settings.MIN_IMAGE_ENTROPY
+        or lap_var < settings.MIN_LAPLACIAN_VAR
+        or unique_vals < 5
+    )
+
+    if is_solid:
+        reason = "This image contains no visual information to check or process (it is blank, solid color, or uniform fill)."
+    else:
+        reason = "Image contains valid visual entropy and information."
+
+    return {
+        "has_information": not is_solid,
+        "entropy": round(entropy, 3),
+        "std_dev": round(std_val, 3),
+        "laplacian_var": round(lap_var, 3),
+        "reason": reason
+    }
+
+
 def _check_edge_touch(x1: int, y1: int, x2: int, y2: int, width: int, height: int) -> bool:
     """Check if bounding box contacts image boundaries."""
     margin_x = max(settings.MIN_EDGE_MARGIN_PIXELS, int(width * settings.EDGE_MARGIN_RATIO))

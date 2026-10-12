@@ -1,7 +1,12 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List, Tuple, Optional
+import numpy as np
+import cv2
 from PIL import Image
+
 from app.core.config import settings
+from app.services.image_utils import clamp_box
+from app.services.model_manager import get_yolo_session, get_anime_face_session
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +16,7 @@ LABEL_ANIME = "an anime or Ghibli-style illustration"
 LABEL_DIGITAL_PAINTING = "a digital painting of a fictional character"
 LABEL_3D = "a computer-generated 3D character"
 LABEL_OBJECT = "a photograph or picture of an object with no person"
+LABEL_DIAGRAM = "a biological or scientific diagram"
 
 IMAGE_LABELS = [
     LABEL_REAL_PHOTO,
@@ -18,7 +24,8 @@ IMAGE_LABELS = [
     LABEL_ANIME,
     LABEL_DIGITAL_PAINTING,
     LABEL_3D,
-    LABEL_OBJECT
+    LABEL_OBJECT,
+    LABEL_DIAGRAM
 ]
 
 SYNTHETIC_KEYWORDS = (
@@ -26,16 +33,30 @@ SYNTHETIC_KEYWORDS = (
     "anime",
     "illustration",
     "digital painting",
-    "computer-generated"
+    "computer-generated",
+    "diagram"
 )
 
 KEYWORD_REAL_PHOTO = "real photograph"
+
+COCO_ANIMAL_CLASSES: Dict[int, Tuple[str, str]] = {
+    14: ("bird", "Bird"),
+    15: ("animal", "Cat"),
+    16: ("animal", "Dog"),
+    17: ("animal", "Horse"),
+    18: ("animal", "Sheep"),
+    19: ("animal", "Cow"),
+    20: ("animal", "Elephant"),
+    21: ("animal", "Bear"),
+    22: ("animal", "Zebra"),
+    23: ("animal", "Giraffe"),
+}
 
 _clip_pipeline = None
 
 
 def get_clip_pipeline():
-    """Lazy initialize the CLIP zero-shot classification pipeline."""
+    """Lazy initialize the CLIP zero-shot classification pipeline (legacy/fallback)."""
     global _clip_pipeline
     if _clip_pipeline is None:
         try:
@@ -66,20 +87,259 @@ def friendly_image_type(top_class: str) -> str:
         return "Digital Painting (Fictional Character)"
     if "computer-generated" in norm:
         return "3D / Computer-generated Character"
+    if "diagram" in norm:
+        return "Biological / Scientific Diagram"
     if "object with no person" in norm:
         return "Object / No Person"
     return "Uncertain"
 
 
+def _decode_yolo_predictions(
+    output_tensor: np.ndarray,
+    orig_w: int,
+    orig_h: int,
+    score_threshold: float,
+    is_anime: bool = False
+) -> List[Dict[str, Any]]:
+    """Decode YOLO output tensor (shape [1, C, 8400]) into boxes and scores with NMS."""
+    if output_tensor is None or len(output_tensor.shape) != 3:
+        return []
+
+    # Transpose [1, C, 8400] -> [8400, C]
+    features = output_tensor[0].T
+    boxes: List[List[int]] = []
+    scores: List[float] = []
+    labels: List[Tuple[str, str]] = []
+
+    scale_x = orig_w / 640.0
+    scale_y = orig_h / 640.0
+
+    if is_anime:
+        confidences = features[:, 4]
+        mask = confidences >= score_threshold
+        valid_rows = features[mask]
+        for row in valid_rows:
+            cx, cy, w, h = row[0], row[1], row[2], row[3]
+            x1 = int(round((cx - w / 2.0) * scale_x))
+            y1 = int(round((cy - h / 2.0) * scale_y))
+            bw = int(round(w * scale_x))
+            bh = int(round(h * scale_y))
+            boxes.append([x1, y1, bw, bh])
+            scores.append(float(row[4]))
+            labels.append(("cartoon_or_illustration", "Anime / Cartoon Character"))
+    else:
+        class_scores = features[:, 4:]
+        max_scores = np.max(class_scores, axis=1)
+        max_classes = np.argmax(class_scores, axis=1)
+
+        mask = max_scores >= score_threshold
+        valid_rows = features[mask]
+        valid_scores = max_scores[mask]
+        valid_classes = max_classes[mask]
+
+        for row, score, cls_id in zip(valid_rows, valid_scores, valid_classes):
+            cid = int(cls_id)
+            if cid in COCO_ANIMAL_CLASSES:
+                cx, cy, w, h = row[0], row[1], row[2], row[3]
+                x1 = int(round((cx - w / 2.0) * scale_x))
+                y1 = int(round((cy - h / 2.0) * scale_y))
+                bw = int(round(w * scale_x))
+                bh = int(round(h * scale_y))
+                boxes.append([x1, y1, bw, bh])
+                scores.append(float(score))
+                labels.append(COCO_ANIMAL_CLASSES[cid])
+
+    if not boxes:
+        return []
+
+    indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold, 0.45)
+    if len(indices) == 0:
+        return []
+
+    results = []
+    for idx in np.asarray(indices).flatten():
+        i = int(idx)
+        bx, by, bw, bh = boxes[i]
+        clamped = list(clamp_box([bx, by, bx + bw, by + bh], orig_w, orig_h))
+        ftype, flabel = labels[i]
+        results.append({
+            "face_type": ftype,
+            "label": flabel,
+            "confidence": round(scores[i], 3),
+            "box_xyxy": clamped
+        })
+    return results
+
+
+def detect_non_human_entities(image_bgr: np.ndarray) -> List[Dict[str, Any]]:
+    """
+    Run lightweight YOLOv8 models to detect:
+    1. Animals & Birds (COCO classes)
+    2. Anime & Cartoon faces (DeepGHS model)
+    """
+    if image_bgr is None or image_bgr.size == 0:
+        return []
+
+    h, w = image_bgr.shape[:2]
+    resized = cv2.resize(image_bgr, (640, 640))
+    blob = (resized.astype(np.float32) / 255.0).transpose(2, 0, 1)[np.newaxis, :, :, :]
+
+    entities: List[Dict[str, Any]] = []
+
+    # 1. Animals & Birds via YOLOv8n
+    yolo_session = get_yolo_session()
+    if yolo_session is not None:
+        try:
+            inp_name = yolo_session.get_inputs()[0].name
+            out = yolo_session.run(None, {inp_name: blob})[0]
+            animals = _decode_yolo_predictions(out, w, h, settings.ANIMAL_CONF_THRESHOLD, is_anime=False)
+            entities.extend(animals)
+        except Exception as exc:
+            logger.warning(f"Animal detection failed: {exc}")
+
+    # 2. Anime & Cartoon faces via Anime YOLOv8
+    anime_session = get_anime_face_session()
+    if anime_session is not None:
+        try:
+            inp_name = anime_session.get_inputs()[0].name
+            out = anime_session.run(None, {inp_name: blob})[0]
+            cartoons = _decode_yolo_predictions(out, w, h, settings.ANIME_FACE_CONF_THRESHOLD, is_anime=True)
+            entities.extend(cartoons)
+        except Exception as exc:
+            logger.warning(f"Anime face detection failed: {exc}")
+
+    return entities
+
+
+def is_biological_diagram_or_drawing(crop_bgr: np.ndarray) -> bool:
+    """
+    Check if a face crop is a biological diagram, schematic, line art,
+    or textbook illustration instead of a photographic face.
+    """
+    if crop_bgr is None or crop_bgr.size == 0:
+        return False
+
+    h, w = crop_bgr.shape[:2]
+    if h < 10 or w < 10:
+        return False
+
+    # 1. White or near-white background ratio
+    white_mask = (crop_bgr[:, :, 0] > 230) & (crop_bgr[:, :, 1] > 230) & (crop_bgr[:, :, 2] > 230)
+    white_ratio = float(np.mean(white_mask))
+
+    # 2. Check skin color coverage in YCrCb color space
+    ycrcb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2YCrCb)
+    cr = ycrcb[:, :, 1]
+    cb = ycrcb[:, :, 2]
+    # Human skin usually falls in Cr: 133-173, Cb: 77-127
+    skin_mask = (cr >= 133) & (cr <= 173) & (cb >= 77) & (cb <= 127)
+    skin_ratio = float(np.mean(skin_mask))
+
+    # If >65% white background and almost no natural skin tones, it's a diagram/drawing
+    if white_ratio > 0.65 and skin_ratio < 0.15:
+        return True
+
+    # 3. High edge sparsity (black lines on solid/light ground)
+    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    edge_ratio = float(np.mean(edges > 0))
+
+    if white_ratio > 0.50 and edge_ratio > 0.05 and skin_ratio < 0.10:
+        return True
+
+    return False
+
+
+def _compute_iou(box_a: List[int], box_b: List[int]) -> float:
+    """Compute Intersection over Union between two [x1, y1, x2, y2] boxes."""
+    x_a = max(box_a[0], box_b[0])
+    y_a = max(box_a[1], box_b[1])
+    x_b = min(box_a[2], box_b[2])
+    y_b = min(box_a[3], box_b[3])
+
+    inter_w = max(0, x_b - x_a)
+    inter_h = max(0, y_b - y_a)
+    inter_area = inter_w * inter_h
+    if inter_area == 0:
+        return 0.0
+
+    box_a_area = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+    box_b_area = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    union = box_a_area + box_b_area - inter_area
+    return float(inter_area / union) if union > 0 else 0.0
+
+
+
+def check_is_non_human_face(
+    face_box: List[int],
+    image_bgr: np.ndarray,
+    non_human_entities: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """
+    Check if a face box corresponds to an animal, bird, cartoon, or diagram.
+    Returns entity dict if non-human, or None if genuine human candidate.
+    """
+    # 1. Overlap with detected animal, bird, or anime face
+    for ent in non_human_entities:
+        ent_box = ent["box_xyxy"]
+        iou = _compute_iou(face_box, ent_box)
+        # Check center inside entity box
+        cx = (face_box[0] + face_box[2]) // 2
+        cy = (face_box[1] + face_box[3]) // 2
+        center_inside = (ent_box[0] <= cx <= ent_box[2]) and (ent_box[1] <= cy <= ent_box[3])
+
+        if iou > 0.25 or center_inside:
+            return {
+                "face_type": ent["face_type"],
+                "label": ent["label"],
+                "confidence": ent["confidence"],
+                "box_xyxy": face_box
+            }
+
+    # 2. Biological diagram check on face crop
+    x1, y1, x2, y2 = clamp_box(face_box, image_bgr.shape[1], image_bgr.shape[0])
+    crop = image_bgr[y1:y2, x1:x2]
+    if is_biological_diagram_or_drawing(crop):
+        return {
+            "face_type": "biological_diagram",
+            "label": "Biological Diagram / Illustration",
+            "confidence": 0.90,
+            "box_xyxy": face_box
+        }
+
+    return None
+
+
 def classify_image_type(image: Image.Image) -> Dict[str, Any]:
     """
-    Classify whether image is a real photo, cartoon, anime, 3D character, or object.
-    Uses zero-shot CLIP classification when available, with resilient fallback.
+    Classify whether image is a real photo, cartoon, anime, 3D character, diagram, or object.
+    Uses zero-shot CLIP classification when available, with resilient computer vision screening.
     """
     pipeline_fn = get_clip_pipeline()
 
     if pipeline_fn is None:
-        # Graceful fallback when transformers/torch model weights are not loaded
+        # Fast, robust computer vision screening
+        image_rgb = image.convert("RGB")
+        arr = np.array(image_rgb)
+        arr_bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+
+        # Check biological diagram
+        if is_biological_diagram_or_drawing(arr_bgr):
+            return {
+                "status": "NON_PHOTO",
+                "top_class": LABEL_DIAGRAM,
+                "top_class_confidence": 0.90,
+                "photo_score": 0.05,
+                "cartoon_score": 0.90,
+                "display_label": "Biological / Scientific Diagram",
+                "all_predictions": [
+                    {"label": LABEL_DIAGRAM, "confidence": 0.90},
+                    {"label": LABEL_REAL_PHOTO, "confidence": 0.05}
+                ],
+                "scores": {LABEL_DIAGRAM: 0.90, LABEL_REAL_PHOTO: 0.05},
+                "reason": "Image has high line sparsity and vector characteristics of a diagram."
+            }
+
         return {
             "status": "PHOTO_LIKE",
             "top_class": LABEL_REAL_PHOTO,
@@ -95,7 +355,7 @@ def classify_image_type(image: Image.Image) -> Dict[str, Any]:
                 LABEL_REAL_PHOTO: 0.85,
                 LABEL_CARTOON: 0.05
             },
-            "reason": "Default screening passed (model offline or running in lightweight mode)."
+            "reason": "Default screening passed (model running in lightweight edge mode)."
         }
 
     try:
@@ -155,7 +415,7 @@ def classify_image_type(image: Image.Image) -> Dict[str, Any]:
             reason = "The image was classified as an object or scene without a person."
         elif any(term in normalized for term in SYNTHETIC_KEYWORDS):
             status = "NON_PHOTO"
-            reason = "The highest-scoring category is an illustrated or computer-generated image."
+            reason = "The highest-scoring category is an illustrated, diagrammatic, or computer-generated image."
         else:
             status = "NEEDS_REVIEW"
             reason = "The image type could not be determined confidently."

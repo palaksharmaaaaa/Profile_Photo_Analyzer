@@ -21,6 +21,8 @@
             --danger-text: #991b1b;
             --neutral-bg: #f1f5f9;
             --neutral-text: #334155;
+            --purple-bg: #f3e8ff;
+            --purple-text: #6b21a8;
         }
 
         * {
@@ -38,7 +40,7 @@
         }
 
         .container {
-            max-width: 900px;
+            max-width: 960px;
             margin: 0 auto;
         }
 
@@ -127,6 +129,7 @@
         .status-warning { background: var(--warning-bg); color: var(--warning-text); }
         .status-danger { background: var(--danger-bg); color: var(--danger-text); }
         .status-neutral { background: var(--neutral-bg); color: var(--neutral-text); }
+        .status-purple { background: var(--purple-bg); color: var(--purple-text); }
 
         .grid-2 {
             display: grid;
@@ -181,6 +184,42 @@
             margin-bottom: 8px;
         }
 
+        .badge-chip {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin: 4px 4px 4px 0;
+            background: #e2e8f0;
+            color: #334155;
+        }
+
+        .badge-chip.purple {
+            background: #f3e8ff;
+            color: #6b21a8;
+        }
+
+        .badge-chip.green {
+            background: #dcfce7;
+            color: #166534;
+        }
+
+        .face-card {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 18px;
+            background: #f8fafc;
+            margin-bottom: 14px;
+        }
+
+        .face-card h3 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: var(--primary);
+        }
+
         .hidden { display: none !important; }
 
         .error-box {
@@ -211,14 +250,14 @@
     <div class="panel">
         <h1>Profile Photo Analyzer</h1>
         <p class="subtitle">
-            Validate profile photos, check face presence & visibility, detect illustrations, and estimate demographic attributes.
+            Authentic computer vision screening: visual information check, human vs non-human face discrimination, multi-face demographic analysis (3-year brackets), and facial quality verification.
         </p>
 
         <form id="uploadForm">
             <div class="upload-zone">
                 <strong>Upload Profile Photo</strong>
-                <p class="card-hint">Accepted formats: JPG, JPEG, PNG, WEBP (Max 8 MB)</p>
-                <input type="file" id="photo" name="file" accept=".jpg,.jpeg,.png,.webp" required>
+                <p class="card-hint">Accepted formats: JPG, JPEG, PNG, WEBP, BMP (Max 10 MB)</p>
+                <input type="file" id="photo" name="file" accept=".jpg,.jpeg,.png,.webp,.bmp" required>
                 <button type="submit" id="analyzeBtn">Analyze Photo</button>
             </div>
         </form>
@@ -226,7 +265,7 @@
 
     <div id="loadingPanel" class="panel hidden">
         <h2>Analyzing Photo...</h2>
-        <p class="subtitle">Running computer vision screening and facial visibility analysis.</p>
+        <p class="subtitle">Screening visual information, detecting faces, classifying entities, and calculating demographics.</p>
     </div>
 
     <div id="resultPanel" class="panel hidden">
@@ -240,7 +279,7 @@
                 <p id="uploadedFilename" class="card-hint"></p>
             </div>
             <div class="card">
-                <h2>Detected Face Region</h2>
+                <h2>Detected Face Region(s)</h2>
                 <img id="annotatedPreview" class="photo-preview" alt="Annotated Face Region">
                 <p id="regionNote" class="card-hint"></p>
             </div>
@@ -250,38 +289,35 @@
 
         <div class="grid-3">
             <div class="card">
-                <div class="card-label">Image Type</div>
-                <div id="imageTypeVal" class="card-val">—</div>
-                <div id="imageConfidenceVal" class="card-hint"></div>
+                <div class="card-label">Visual Information</div>
+                <div id="infoVal" class="card-val">—</div>
+                <div id="infoDetailVal" class="card-hint"></div>
             </div>
             <div class="card">
-                <div class="card-label">Face Count</div>
-                <div id="faceCountVal" class="card-val">—</div>
-                <div id="faceConfidenceVal" class="card-hint"></div>
+                <div class="card-label">Real Human Faces</div>
+                <div id="humanFaceCountVal" class="card-val">—</div>
+                <div id="humanFaceDetailVal" class="card-hint"></div>
             </div>
             <div class="card">
-                <div class="card-label">Visibility & Framing</div>
-                <div id="visibilityVal" class="card-val">—</div>
-                <div id="visibilityReasonVal" class="card-hint"></div>
-            </div>
-            <div class="card">
-                <div class="card-label">Estimated Age Group</div>
-                <div id="ageVal" class="card-val">Not performed</div>
-                <div id="ageConfidenceVal" class="card-hint"></div>
-            </div>
-            <div class="card">
-                <div class="card-label">Gender Presentation</div>
-                <div id="genderVal" class="card-val">Not performed</div>
-                <div id="genderNoteVal" class="card-hint"></div>
-            </div>
-            <div class="card">
-                <div class="card-label">Age Verification</div>
-                <div id="ageVerificationVal" class="card-val">Required</div>
-                <div class="card-hint">Biometric estimates do not replace legal age verification.</div>
+                <div class="card-label">Other Faces / Entities</div>
+                <div id="otherFaceCountVal" class="card-val">—</div>
+                <div id="otherFaceDetailVal" class="card-hint"></div>
             </div>
         </div>
 
-        <p id="extraNote" class="footer-note"></p>
+        <!-- Per-Face Breakdown Container -->
+        <div id="facesSection" class="hidden">
+            <h2>Human Face Demographics (All Identified Faces)</h2>
+            <div id="facesContainer"></div>
+        </div>
+
+        <!-- Non-Human Entities Container -->
+        <div id="otherEntitiesSection" class="hidden">
+            <h2>Non-Human Faces &amp; Entities Detected</h2>
+            <div id="otherEntitiesContainer"></div>
+        </div>
+
+        <p id="extraNote" class="footer-note" style="margin-top: 18px;"></p>
     </div>
 
     <div id="errorPanel" class="panel hidden">
@@ -291,8 +327,7 @@
 
     <div class="panel">
         <p class="footer-note">
-            Notice: All facial detection and demographic classifications are automated probabilistic estimates.
-            Photographs should be evaluated through secure, dedicated KYC channels when enforcing legal age or identity restrictions.
+            Authenticity Notice: All facial detections and demographic estimates are generated directly by lightweight edge neural networks without fabrication. If a feature cannot be determined with certainty, it is displayed as "Unsure" or "Not Detected". Biometric estimates do not replace certified KYC verification.
         </p>
     </div>
 
@@ -306,8 +341,10 @@
     const show = id => document.getElementById(id).classList.remove("hidden");
 
     function setText(id, value) {
-        document.getElementById(id).textContent =
-            (value === undefined || value === null || value === "") ? "—" : String(value);
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = (value === undefined || value === null || value === "") ? "—" : String(value);
+        }
     }
 
     function setStatus(text, typeClass) {
@@ -367,9 +404,12 @@
         const status = data.posting_status || "UNKNOWN";
         const accepted = data.accepted === true;
         const imageCheck = data.image_type_check || {};
+        const infoCheck = data.image_info_check || {};
 
-        if (status === "NON_PHOTO_WARNING") {
-            setStatus("WARNING — " + (imageCheck.display_label || "NON-PHOTO").toUpperCase() + " DETECTED", "status-warning");
+        if (status === "NO_INFORMATION") {
+            setStatus("REJECTED — NO VISUAL INFORMATION DETECTED (BLANK / SOLID COLOR)", "status-danger");
+        } else if (status === "NON_PHOTO_WARNING") {
+            setStatus("WARNING — NON-PHOTO / NON-HUMAN DETECTED", "status-warning");
         } else if (status === "AGE_VERIFICATION_REQUIRED") {
             setStatus("PHOTO PASSED — AGE VERIFICATION REQUIRED", "status-warning");
         } else if (accepted) {
@@ -381,23 +421,82 @@
         }
 
         setText("reasonText", data.reason || data.posting_reason);
-        setText("imageTypeVal", imageCheck.display_label || imageCheck.top_class || "—");
-        setText("imageConfidenceVal", imageCheck.top_class_confidence ? ("Confidence: " + (imageCheck.top_class_confidence * 100).toFixed(1) + "%") : "");
 
-        setText("faceCountVal", (data.face_count !== undefined) ? (data.face_count + (data.face_count === 1 ? " Face" : " Faces")) : "—");
-        setText("faceConfidenceVal", data.face_detection_confidence ? ("Detection: " + (data.face_detection_confidence * 100).toFixed(1) + "%") : "");
+        // Visual Info
+        if (infoCheck.has_information === false) {
+            setText("infoVal", "No Information");
+            setText("infoDetailVal", "Blank or solid color (Entropy: " + (infoCheck.entropy || 0) + ")");
+        } else {
+            setText("infoVal", "Valid");
+            setText("infoDetailVal", "Entropy: " + (infoCheck.entropy || 0) + " | Std: " + (infoCheck.std_dev || 0));
+        }
 
-        const vis = data.face_visibility || {};
-        setText("visibilityVal", vis.status || "—");
-        setText("visibilityReasonVal", vis.reason || "");
+        // Real Human Faces
+        const humanCount = (data.real_human_face_count !== undefined) ? data.real_human_face_count : (data.face_count || 0);
+        setText("humanFaceCountVal", humanCount + (humanCount === 1 ? " Face" : " Faces"));
+        setText("humanFaceDetailVal", humanCount === 1 ? "1 authentic human face detected" : (humanCount > 1 ? "Multiple human faces detected" : "No human faces detected"));
 
-        setText("ageVal", data.estimated_age_group || "Not performed");
-        setText("ageConfidenceVal", data.age_model_confidence ? ("Model score: " + (data.age_model_confidence * 100).toFixed(1) + "%") : (data.age_note || ""));
+        // Other Faces
+        const otherCount = data.other_face_count || 0;
+        setText("otherFaceCountVal", otherCount + (otherCount === 1 ? " Entity" : " Entities"));
+        setText("otherFaceDetailVal", otherCount > 0 ? (otherCount + " non-human face/entity detected") : "None detected");
 
-        setText("genderVal", data.gender_presentation_prediction || "Not performed");
-        setText("genderNoteVal", data.gender_note || "");
+        // Human Faces Breakdown
+        const facesContainer = document.getElementById("facesContainer");
+        facesContainer.innerHTML = "";
+        const humanFaces = data.human_faces || [];
+        if (humanFaces.length > 0) {
+            show("facesSection");
+            humanFaces.forEach(f => {
+                const card = document.createElement("div");
+                card.className = "face-card";
+                const isMinorText = f.possible_minor_risk ? '<span class="badge-chip" style="background:#fee2e2;color:#991b1b;">Minor Risk (&lt;18)</span>' : '<span class="badge-chip green">Adult Age</span>';
+                const ageConf = f.age_confidence ? (" (Confidence: " + (f.age_confidence * 100).toFixed(1) + "%)") : "";
+                const genderConf = f.gender_confidence ? (" (Confidence: " + (f.gender_confidence * 100).toFixed(1) + "%)") : "";
+                const visStatus = (f.face_visibility && f.face_visibility.status) ? f.face_visibility.status : "—";
 
-        setText("ageVerificationVal", data.age_verification_required ? "Required" : "Not required");
+                card.innerHTML = `
+                    <h3>Face #${f.face_id} ${f.is_primary ? "(Primary)" : ""}</h3>
+                    <div class="grid-3" style="margin-bottom:0;">
+                        <div>
+                            <div class="card-label">Estimated Age Group (Pairs of 3)</div>
+                            <div class="card-val" style="font-size:16px;">${f.age_group || "Not Detected"}</div>
+                            <div class="card-hint">${ageConf} ${isMinorText}</div>
+                        </div>
+                        <div>
+                            <div class="card-label">Gender Presentation</div>
+                            <div class="card-val" style="font-size:16px;">${f.gender || "Not Detected"}</div>
+                            <div class="card-hint">${genderConf}</div>
+                        </div>
+                        <div>
+                            <div class="card-label">Framing &amp; Quality</div>
+                            <div class="card-val" style="font-size:16px;">${visStatus}</div>
+                            <div class="card-hint">${(f.face_visibility && f.face_visibility.reason) ? f.face_visibility.reason : ""}</div>
+                        </div>
+                    </div>
+                `;
+                facesContainer.appendChild(card);
+            });
+        } else {
+            hide("facesSection");
+        }
+
+        // Other Entities Breakdown
+        const otherEntitiesContainer = document.getElementById("otherEntitiesContainer");
+        otherEntitiesContainer.innerHTML = "";
+        const otherFaces = data.other_faces || [];
+        if (otherFaces.length > 0) {
+            show("otherEntitiesSection");
+            otherFaces.forEach(ent => {
+                const chip = document.createElement("span");
+                chip.className = "badge-chip purple";
+                chip.textContent = `${ent.label} (Score: ${(ent.confidence * 100).toFixed(1)}%)`;
+                otherEntitiesContainer.appendChild(chip);
+            });
+        } else {
+            hide("otherEntitiesSection");
+        }
+
         setText("extraNote", data.note || "");
     }
 </script>
