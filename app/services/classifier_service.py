@@ -18,6 +18,7 @@ LABEL_DIGITAL_PAINTING = "a digital painting of a fictional character"
 LABEL_3D = "a computer-generated 3D character"
 LABEL_OBJECT = "a photograph or picture of an object with no person"
 LABEL_DIAGRAM = "a biological or scientific diagram"
+LABEL_UNCERTAIN = "uncertain or unverified image type"
 
 IMAGE_LABELS = [
     LABEL_REAL_PHOTO,
@@ -96,6 +97,11 @@ def friendly_image_type(top_class: str) -> str:
     return "Uncertain"
 
 
+def _apply_nms(boxes: list[list[int]], scores: list[float], score_threshold: float, nms_threshold: float = 0.45) -> Any:
+    """Run OpenCV non-maximum suppression on detected boxes."""
+    return cv2.dnn.NMSBoxes(boxes, scores, score_threshold, nms_threshold)
+
+
 def _decode_yolo_predictions(
     output_tensor: np.ndarray,
     orig_w: int,
@@ -154,7 +160,7 @@ def _decode_yolo_predictions(
     if not boxes:
         return []
 
-    indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold, 0.45)
+    indices = _apply_nms(boxes, scores, score_threshold, 0.45)
     if len(indices) == 0:
         return []
 
@@ -308,6 +314,27 @@ def check_is_non_human_face(
     return None
 
 
+def is_cartoon_or_illustration(image_bgr: np.ndarray) -> bool:
+    """Detect whether an image exhibits cartoon or digital illustration traits."""
+    if image_bgr.size == 0:
+        return False
+    small = cv2.resize(image_bgr, (128, 128))
+    quantized = small // 32
+    flat_colors = quantized.reshape(-1, 3)
+    unique_colors = len(np.unique(flat_colors, axis=0))
+
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 40, 120)
+    edge_ratio = float(np.mean(edges > 0))
+
+    non_edge_mask = edges == 0
+    flat_variance = float(np.var(gray[non_edge_mask])) if np.sum(non_edge_mask) > 100 else 0.0
+
+    is_flat_palette = unique_colors < 120
+    is_hard_outline_flat_texture = edge_ratio > 0.06 and flat_variance < 180.0
+    return bool(is_flat_palette or is_hard_outline_flat_texture)
+
+
 def classify_image_type(image: Image.Image) -> dict[str, Any]:
     """
     Classify whether image is a real photo, cartoon, anime, 3D character, diagram, or object.
@@ -316,12 +343,11 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
     pipeline_fn = get_clip_pipeline()
 
     if pipeline_fn is None:
-        # Fast, robust computer vision screening
         image_rgb = image.convert("RGB")
         arr = np.array(image_rgb)
         arr_bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
-        # Check biological diagram
+        # 1. Check biological diagram
         if is_biological_diagram_or_drawing(arr_bgr):
             return {
                 "status": "NON_PHOTO",
@@ -330,6 +356,7 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
                 "photo_score": 0.05,
                 "cartoon_score": 0.90,
                 "display_label": "Biological / Scientific Diagram",
+                "model_executed": "Heuristic CV Screener",
                 "all_predictions": [
                     {"label": LABEL_DIAGRAM, "confidence": 0.90},
                     {"label": LABEL_REAL_PHOTO, "confidence": 0.05},
@@ -338,19 +365,39 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
                 "reason": "Image has high line sparsity and vector characteristics of a diagram.",
             }
 
+        # 2. Check cartoon / digital illustration traits
+        if is_cartoon_or_illustration(arr_bgr):
+            return {
+                "status": "NON_PHOTO",
+                "top_class": LABEL_CARTOON,
+                "top_class_confidence": 0.85,
+                "photo_score": 0.10,
+                "cartoon_score": 0.85,
+                "display_label": "Cartoon / Illustrated Image",
+                "model_executed": "Heuristic CV Screener",
+                "all_predictions": [
+                    {"label": LABEL_CARTOON, "confidence": 0.85},
+                    {"label": LABEL_REAL_PHOTO, "confidence": 0.10},
+                ],
+                "scores": {LABEL_CARTOON: 0.85, LABEL_REAL_PHOTO: 0.10},
+                "reason": "Image exhibits flat color palette and hard vector/illustration outlines.",
+            }
+
+        # 3. Fallback when CLIP is unavailable: Treat heuristic-only output as review-required
         return {
-            "status": "PHOTO_LIKE",
-            "top_class": LABEL_REAL_PHOTO,
-            "top_class_confidence": 0.85,
-            "photo_score": 0.85,
-            "cartoon_score": 0.05,
-            "display_label": "Real Photo",
+            "status": "NEEDS_REVIEW",
+            "top_class": LABEL_UNCERTAIN,
+            "top_class_confidence": 0.50,
+            "photo_score": 0.50,
+            "cartoon_score": 0.50,
+            "display_label": "Heuristic Screening (Review Required)",
+            "model_executed": "Heuristic CV Screener",
             "all_predictions": [
-                {"label": LABEL_REAL_PHOTO, "confidence": 0.85},
-                {"label": LABEL_CARTOON, "confidence": 0.05},
+                {"label": LABEL_UNCERTAIN, "confidence": 0.50},
+                {"label": LABEL_REAL_PHOTO, "confidence": 0.50},
             ],
-            "scores": {LABEL_REAL_PHOTO: 0.85, LABEL_CARTOON: 0.05},
-            "reason": "Default screening passed (model running in lightweight edge mode).",
+            "scores": {LABEL_UNCERTAIN: 0.50, LABEL_REAL_PHOTO: 0.50},
+            "reason": "Zero-shot neural classifier (CLIP) unavailable; heuristic screening requires manual review.",
         }
 
     try:
@@ -410,6 +457,7 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
             "photo_score": round(photo_score, 4),
             "cartoon_score": round(synthetic_score, 4),
             "display_label": display_label,
+            "model_executed": "OpenAI CLIP ViT-B/32",
             "all_predictions": all_predictions,
             "scores": {item["label"]: item["confidence"] for item in all_predictions},
             "reason": reason,
@@ -424,6 +472,7 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
             "photo_score": 0.0,
             "cartoon_score": 0.0,
             "display_label": "Uncertain",
+            "model_executed": "Heuristic CV Screener",
             "all_predictions": [],
             "scores": {},
             "reason": "Image classification failed due to an internal error.",

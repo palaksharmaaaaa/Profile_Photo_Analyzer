@@ -184,7 +184,7 @@ def extract_face_attributes(face: Any) -> tuple[str, float | None, str]:
     age_val = getattr(face, "age", None)
     if age_val is not None:
         estimated_age_group = age_to_three_year_group(float(age_val))
-        age_confidence = 0.85
+        age_confidence = getattr(face, "age_confidence", None)
     else:
         estimated_age_group = NOT_AVAILABLE
         age_confidence = None
@@ -228,15 +228,18 @@ def _parse_gender_prediction(gender_logits: np.ndarray) -> tuple[str, float]:
     return "male-presentation prediction", round(float(probs[1]), 3)
 
 
-def _parse_age_prediction(raw_age_normalized: float, det_score: float) -> tuple[str, float | None, float | None]:
-    """Parse continuous normalized age and compute 3-year bucket."""
+def _parse_age_prediction(raw_age_normalized: float) -> tuple[str, float | None, float | None]:
+    """
+    Parse continuous normalized age and compute 3-year bucket.
+    InsightFace GenderAge model performs scalar continuous regression without class probabilities.
+    To avoid fabricating confidence by borrowing detector scores, age confidence is set to None.
+    """
     raw_age = float(raw_age_normalized * 100)
     if raw_age < 0 or raw_age > 120:
         return UNSURE, None, None
     age_grp = age_to_three_year_group(raw_age)
     est_age = round(raw_age, 1)
-    age_conf = round(float(np.clip(det_score * 0.92, 0.50, 0.95)), 3)
-    return age_grp, est_age, age_conf
+    return age_grp, est_age, None
 
 
 def predict_face_demographics(
@@ -269,8 +272,7 @@ def predict_face_demographics(
         out = session.run(None, {inp_name: blob})[0]
 
         gender_str, gender_conf = _parse_gender_prediction(out[0][:2])
-        det_score = float(getattr(face_obj, "det_score", 0.90)) if face_obj is not None else 0.85
-        age_grp, est_age, age_conf = _parse_age_prediction(out[0][2], det_score)
+        age_grp, est_age, age_conf = _parse_age_prediction(out[0][2])
 
         return age_grp, est_age, age_conf, gender_str, gender_conf
     except Exception as exc:

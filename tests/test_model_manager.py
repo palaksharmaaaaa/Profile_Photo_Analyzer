@@ -8,7 +8,8 @@ from app.services import model_manager as mm
 def test_ensure_model_file_already_exists(tmp_path):
     f = tmp_path / "model.onnx"
     f.write_bytes(b"\x08" + b"x" * 59999)
-    assert mm.ensure_model_file(f, "http://example.com/model.onnx") is True
+    with patch("app.services.model_manager._verify_model_loadable", return_value=True):
+        assert mm.ensure_model_file(f, "http://example.com/model.onnx") is True
 
 
 def test_ensure_model_file_download_success(tmp_path):
@@ -24,7 +25,10 @@ def test_ensure_model_file_download_success(tmp_path):
         def __exit__(self, *args):
             pass
 
-    with patch("urllib.request.urlopen", return_value=DummyContext()):
+    with (
+        patch("urllib.request.urlopen", return_value=DummyContext()),
+        patch("app.services.model_manager._verify_model_loadable", return_value=True),
+    ):
         assert mm.ensure_model_file(target, "http://example.com/downloaded.onnx") is True
         assert target.is_file()
         assert target.stat().st_size == 60000
@@ -102,6 +106,17 @@ def test_is_valid_model_file_ioerror(tmp_path):
     f.write_bytes(b"\x08" + b"x" * 60000)
     with patch("builtins.open", side_effect=OSError("Read error")):
         assert mm.is_valid_model_file(f) is False
+
+
+def test_is_valid_model_file_nonexistent_and_dir(tmp_path):
+    # Non-existent file raises FileNotFoundError (caught by OSError handler)
+    non_existent = tmp_path / "missing.onnx"
+    assert mm.is_valid_model_file(non_existent) is False
+
+    # Directory is not a regular file
+    a_dir = tmp_path / "subfolder"
+    a_dir.mkdir()
+    assert mm.is_valid_model_file(a_dir) is False
 
 
 def test_check_models_status():
@@ -211,3 +226,58 @@ def test_get_yolo_session(monkeypatch):
         patch("onnxruntime.InferenceSession", side_effect=RuntimeError("ort error")),
     ):
         assert mm.get_yolo_session() is None
+
+
+def test_is_valid_model_file_pinned_hash(tmp_path):
+    f = tmp_path / mm.settings.YUNET_MODEL_NAME
+    f.write_bytes(b"\x08" + b"x" * 59999)
+    correct_hash = mm.MODEL_PINNED_HASHES[mm.settings.YUNET_MODEL_NAME]
+
+    with patch("app.services.model_manager._calculate_file_sha256", return_value=correct_hash):
+        assert mm.is_valid_model_file(f) is True
+        # Second call hits cache
+        assert mm.is_valid_model_file(f) is True
+
+    # Pinned hash mismatch
+    bad_file = tmp_path / mm.settings.GENDERAGE_MODEL_NAME
+    bad_file.write_bytes(b"\x08" + b"bad" * 20000)
+    with patch("app.services.model_manager._calculate_file_sha256", return_value="deadbeef"):
+        assert mm.is_valid_model_file(bad_file) is False
+
+    # OSError in hash calculation
+    with patch("app.services.model_manager._calculate_file_sha256", side_effect=OSError("Read error")):
+        bad_file.touch()
+        assert mm.is_valid_model_file(bad_file) is False
+
+
+def test_verify_model_loadable_branches(tmp_path):
+    # Invalid header
+    bad_header = tmp_path / "bad_head.onnx"
+    bad_header.write_bytes(b"\x00" * 32)
+    assert mm._verify_model_loadable(bad_header) is False
+
+    # YuNet model loading success & fail
+    yunet_path = tmp_path / mm.settings.YUNET_MODEL_NAME
+    yunet_path.write_bytes(b"\x08" + b"x" * 32)
+    with patch("cv2.FaceDetectorYN.create", return_value=MagicMock()):
+        assert mm._verify_model_loadable(yunet_path) is True
+    with patch("cv2.FaceDetectorYN.create", side_effect=RuntimeError("cv2 error")):
+        assert mm._verify_model_loadable(yunet_path) is False
+
+    # ONNX session loading success & fail
+    onnx_path = tmp_path / "custom.onnx"
+    onnx_path.write_bytes(b"\x08" + b"x" * 32)
+    with patch("onnxruntime.InferenceSession", return_value=MagicMock()):
+        assert mm._verify_model_loadable(onnx_path) is True
+    with patch("onnxruntime.InferenceSession", side_effect=RuntimeError("ort error")):
+        assert mm._verify_model_loadable(onnx_path) is False
+
+
+def test_calculate_file_sha256(tmp_path):
+    import hashlib
+
+    test_file = tmp_path / "hash_test.bin"
+    content = b"ProfilePhotoAnalyzerIntegrityCheck"
+    test_file.write_bytes(content)
+    expected = hashlib.sha256(content).hexdigest()
+    assert mm._calculate_file_sha256(test_file) == expected

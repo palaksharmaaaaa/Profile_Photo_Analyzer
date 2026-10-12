@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import urllib.request
@@ -10,6 +11,14 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+MODEL_PINNED_HASHES: dict[str, str] = {
+    settings.YUNET_MODEL_NAME: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+    settings.GENDERAGE_MODEL_NAME: "4fde69b1c810857b88c64a335084f1c3fe8f01246c9a191b48c7bb756d6652fb",
+    settings.ANIME_FACE_MODEL_NAME: "fd860b650a4377046842c3cd80d01b0b408bdfbdb4acee5759630f82c6ef04a9",
+    settings.YOLO_MODEL_NAME: "dd48a79dd7fec8ca25fde4eca742ff7bca23b27e2e903eb23bc1d9f83a459bd2",
+}
+
+_validation_cache: dict[str, tuple[float, bool]] = {}
 _yunet_detector: cv2.FaceDetectorYN | None = None
 _yunet_size: tuple[int, int] = (0, 0)
 _genderage_session: ort.InferenceSession | None = None
@@ -17,16 +26,64 @@ _anime_session: ort.InferenceSession | None = None
 _yolo_session: ort.InferenceSession | None = None
 
 
-def is_valid_model_file(model_path: Path, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
-    """Check if model file exists, meets minimum size, and contains a valid ONNX binary protobuf header."""
-    if not (model_path.is_file() and model_path.stat().st_size >= min_size):
-        return False
+def _calculate_file_sha256(file_path: Path) -> str:
+    """Compute SHA-256 hash of a file in streaming chunks."""
+    hasher = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(64 * 1024):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _verify_model_loadable(model_path: Path) -> bool:
+    """Verify that an ONNX model file can be parsed and loaded without protobuf corruption."""
     try:
         with open(model_path, "rb") as f:
             header = f.read(32)
-        return bool(header and header[0] in (0x08, 0x12, 0x0A))
+        if not (header and header[0] in (0x08, 0x12, 0x0A)):
+            return False
+
+        if model_path.name == settings.YUNET_MODEL_NAME:
+            detector = cv2.FaceDetectorYN.create(str(model_path), "", (320, 320))
+            return detector is not None
+        session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+        return session is not None
+    except Exception:
+        return False
+
+
+def is_valid_model_file(model_path: Path, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
+    """
+    Check if model file exists, meets minimum size, and passes cryptographic
+    pinned hash verification or deep protobuf load integrity check.
+    """
+    try:
+        st = model_path.stat()
     except OSError:
         return False
+
+    if not (model_path.is_file() and st.st_size >= min_size):
+        return False
+
+    cache_key = str(model_path.resolve())
+    mtime = st.st_mtime
+
+    cached = _validation_cache.get(cache_key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+
+    pinned_hash = MODEL_PINNED_HASHES.get(model_path.name)
+    if pinned_hash:
+        try:
+            actual_hash = _calculate_file_sha256(model_path)
+            is_valid = actual_hash == pinned_hash
+        except OSError:
+            is_valid = False
+    else:
+        is_valid = _verify_model_loadable(model_path)
+
+    _validation_cache[cache_key] = (mtime, is_valid)
+    return is_valid
 
 
 def ensure_model_file(model_path: Path, download_url: str, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:

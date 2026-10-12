@@ -14,6 +14,7 @@ from app.services.face_service import (
     NOT_DETECTED,
     UNSURE,
     detect_faces,
+    get_face_app,
     possible_minor_age_group,
     predict_face_demographics,
 )
@@ -23,6 +24,12 @@ from app.services.image_utils import (
     clamp_box,
     compute_normalized_box,
     pil_to_bgr,
+)
+from app.services.model_manager import (
+    get_anime_face_session,
+    get_genderage_session,
+    get_yolo_session,
+    get_yunet_detector,
 )
 from app.services.quality_service import assess_face_quality, check_image_information
 
@@ -39,11 +46,42 @@ NO_FACE_DETECTED = "No face detected."
 DEFAULT_IMAGE_FORMAT = "image/jpeg"
 
 MODEL_YUNET = "YuNet Face Detector (2023mar)"
+MODEL_INSIGHTFACE = "InsightFace Face Detector"
 MODEL_GENDERAGE = "InsightFace GenderAge (multitask CNN)"
 MODEL_ANIME_FACE = "DeepGHS Anime Face Detector (v1.4n)"
 MODEL_YOLO = "Ultralytics YOLOv8n (COCO)"
 MODEL_INFO_ANALYZER = "Image Information & Entropy Analyzer"
 MODEL_SCREENING = "Resilient Image Screening / CLIP"
+
+
+def _resolve_executed_models(
+    image_type: dict[str, Any],
+    has_ran_face_detection: bool = False,
+    has_ran_entity_detection: bool = False,
+    has_ran_demographics: bool = False,
+) -> list[str]:
+    """Dynamically determine the exact computer vision models that executed inference."""
+    executed = [MODEL_INFO_ANALYZER]
+    classifier_model = image_type.get("model_executed")
+    if classifier_model:
+        executed.append(classifier_model)
+
+    if has_ran_face_detection:
+        if get_face_app() is not None:
+            executed.append(MODEL_INSIGHTFACE)
+        elif get_yunet_detector() is not None:
+            executed.append(MODEL_YUNET)
+
+    if has_ran_entity_detection:
+        if get_yolo_session() is not None:
+            executed.append(MODEL_YOLO)
+        if get_anime_face_session() is not None:
+            executed.append(MODEL_ANIME_FACE)
+
+    if has_ran_demographics and get_genderage_session() is not None:
+        executed.append(MODEL_GENDERAGE)
+
+    return list(dict.fromkeys(executed))
 
 
 def _determine_step3_status(info_ok: bool, human_count: int) -> str:
@@ -109,7 +147,6 @@ def _build_technical_diagnostics(
     models_executed: list[str] | None = None,
 ) -> dict[str, Any]:
     """Generate technical metadata and computer vision model diagnostics."""
-    default_models = [MODEL_YUNET, MODEL_GENDERAGE, MODEL_ANIME_FACE, MODEL_YOLO]
     return {
         "processing_time_ms": 0.0,
         "image_width": width,
@@ -118,7 +155,7 @@ def _build_technical_diagnostics(
         "entropy_score": round(float(info_check.get("entropy", 0.0)), 2),
         "std_dev_score": round(float(info_check.get("std_dev", 0.0)), 2),
         "laplacian_var": round(float(info_check.get("laplacian_var", 0.0)), 2),
-        "models_executed": models_executed if models_executed is not None else default_models,
+        "models_executed": models_executed if models_executed is not None else [MODEL_INFO_ANALYZER],
     }
 
 
@@ -229,13 +266,12 @@ def _handle_no_human_faces(
         demographics_done=False,
         demographics_detail="",
     )
-    executed = [
-        MODEL_INFO_ANALYZER,
-        MODEL_SCREENING,
-        MODEL_ANIME_FACE,
-        MODEL_YOLO,
-        MODEL_YUNET,
-    ]
+    executed = _resolve_executed_models(
+        image_type,
+        has_ran_face_detection=True,
+        has_ran_entity_detection=True,
+        has_ran_demographics=False,
+    )
     diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check, executed)
 
     return {
@@ -308,15 +344,12 @@ def _handle_multiple_human_faces(
         demographics_done=False,
         demographics_detail="",
     )
-    executed = [
-        MODEL_INFO_ANALYZER,
-        MODEL_SCREENING,
-        MODEL_ANIME_FACE,
-        MODEL_YOLO,
-        MODEL_YUNET,
-    ]
-    if not non_photo:
-        executed.append(MODEL_GENDERAGE)
+    executed = _resolve_executed_models(
+        image_type,
+        has_ran_face_detection=True,
+        has_ran_entity_detection=True,
+        has_ran_demographics=not non_photo,
+    )
     diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check, executed)
 
     return {
@@ -658,15 +691,12 @@ def analyze_profile_photo_image(
         demographics_done=True,
         demographics_detail=f"Estimated age group: {age_label}, Gender: {gender_pred}.",
     )
-    executed = [
-        MODEL_INFO_ANALYZER,
-        MODEL_SCREENING,
-        MODEL_ANIME_FACE,
-        MODEL_YOLO,
-        MODEL_YUNET,
-    ]
-    if not non_photo:
-        executed.append(MODEL_GENDERAGE)
+    executed = _resolve_executed_models(
+        image_type,
+        has_ran_face_detection=True,
+        has_ran_entity_detection=True,
+        has_ran_demographics=not non_photo,
+    )
     diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check, executed)
 
     return {

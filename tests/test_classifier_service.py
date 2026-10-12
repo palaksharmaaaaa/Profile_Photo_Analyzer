@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+import numpy as np
 from PIL import Image
 
 from app.services.classifier_service import (
@@ -22,12 +23,16 @@ def test_friendly_image_type():
 
 
 def test_classify_image_type_fallback():
-    # When CLIP pipeline returns None, fallback defaults to PHOTO_LIKE gracefully
-    with patch("app.services.classifier_service.get_clip_pipeline", return_value=None):
+    # When CLIP pipeline returns None, unverified fallback defaults to NEEDS_REVIEW
+    with (
+        patch("app.services.classifier_service.get_clip_pipeline", return_value=None),
+        patch("app.services.classifier_service.is_biological_diagram_or_drawing", return_value=False),
+        patch("app.services.classifier_service.is_cartoon_or_illustration", return_value=False),
+    ):
         img = Image.new("RGB", (100, 100))
         result = classify_image_type(img)
-        assert result["status"] == "PHOTO_LIKE"
-        assert result["top_class_confidence"] > 0.5
+        assert result["status"] == "NEEDS_REVIEW"
+        assert result["display_label"] == "Heuristic Screening (Review Required)"
 
 
 def test_classify_image_type_clip_photo():
@@ -144,7 +149,6 @@ def test_friendly_image_type_diagram():
 
 
 def test_is_biological_diagram_or_drawing():
-    import numpy as np
 
     from app.services.classifier_service import is_biological_diagram_or_drawing
 
@@ -162,7 +166,6 @@ def test_is_biological_diagram_or_drawing():
 
 
 def test_decode_yolo_predictions_edges():
-    import numpy as np
 
     from app.services.classifier_service import _decode_yolo_predictions
 
@@ -174,14 +177,13 @@ def test_decode_yolo_predictions_edges():
     assert _decode_yolo_predictions(tensor_empty, 640, 640, 0.35) == []
 
     # NMS returns empty array
-    with patch("cv2.dnn.NMSBoxes", return_value=np.array([])):
+    with patch("app.services.classifier_service._apply_nms", return_value=np.array([])):
         tensor = np.zeros((1, 5, 8400), dtype=np.float32)
         tensor[0, 4, 0] = 0.90
         assert _decode_yolo_predictions(tensor, 640, 640, 0.35, is_anime=True) == []
 
 
 def test_is_biological_diagram_edge_ratio_branch():
-    import numpy as np
 
     from app.services.classifier_service import is_biological_diagram_or_drawing
 
@@ -192,7 +194,6 @@ def test_is_biological_diagram_edge_ratio_branch():
 
 
 def test_decode_yolo_predictions_anime():
-    import numpy as np
 
     from app.services.classifier_service import _decode_yolo_predictions
 
@@ -212,7 +213,6 @@ def test_decode_yolo_predictions_anime():
 
 
 def test_decode_yolo_predictions_animal():
-    import numpy as np
 
     from app.services.classifier_service import _decode_yolo_predictions
 
@@ -233,8 +233,6 @@ def test_decode_yolo_predictions_animal():
 
 def test_detect_non_human_entities():
     from unittest.mock import MagicMock
-
-    import numpy as np
 
     from app.services.classifier_service import detect_non_human_entities
 
@@ -267,7 +265,6 @@ def test_detect_non_human_entities():
 
 
 def test_check_is_non_human_face():
-    import numpy as np
 
     from app.services.classifier_service import check_is_non_human_face
 
@@ -315,3 +312,29 @@ def test_classify_image_type_diagram_fallback():
         assert result["status"] == "NON_PHOTO"
         assert result["top_class"] == "a biological or scientific diagram"
         assert result["display_label"] == "Biological / Scientific Diagram"
+
+
+def test_classify_image_type_cartoon_fallback():
+    # When CLIP pipeline returns None and image has cartoon traits
+    with (
+        patch("app.services.classifier_service.get_clip_pipeline", return_value=None),
+        patch("app.services.classifier_service.is_biological_diagram_or_drawing", return_value=False),
+        patch("app.services.classifier_service.is_cartoon_or_illustration", return_value=True),
+    ):
+        img = Image.new("RGB", (100, 100))
+        result = classify_image_type(img)
+        assert result["status"] == "NON_PHOTO"
+        assert result["top_class"] == "a cartoon drawing of a person"
+        assert result["display_label"] == "Cartoon / Illustrated Image"
+
+
+def test_is_cartoon_or_illustration():
+
+    from app.services.classifier_service import is_cartoon_or_illustration
+
+    # Empty image
+    assert is_cartoon_or_illustration(np.zeros((0, 0, 3), dtype=np.uint8)) is False
+
+    # Flat solid color (cartoon posterized palette)
+    flat = np.full((128, 128, 3), 180, dtype=np.uint8)
+    assert is_cartoon_or_illustration(flat) is True

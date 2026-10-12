@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 from PIL import Image
@@ -6,9 +6,21 @@ from PIL import Image
 from app.services.analyzer import analyze_profile_photo_image
 from tests.conftest import MockFace
 
+MOCK_PHOTO_TYPE = {
+    "status": "PHOTO_LIKE",
+    "top_class": "a real photograph of a real human person",
+    "top_class_confidence": 0.95,
+    "photo_score": 0.95,
+    "cartoon_score": 0.05,
+    "display_label": "Real Photo",
+    "reason": "Highest scoring category is real photo.",
+    "model_executed": "OpenAI CLIP ViT-B/32",
+}
+
 
 def test_analyzer_no_faces(test_image_rgb):
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=[]),
         patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
     ):
@@ -74,7 +86,15 @@ def test_analyzer_single_face_approved(test_image_rgb):
         "landmarks_available": True,
         "landmarks_inside_image": True,
     }
+    mock_type = {
+        "status": "PHOTO_LIKE",
+        "top_class": "a real photograph of a real human person",
+        "display_label": "Real Photo",
+        "photo_score": 0.95,
+        "model_executed": "OpenAI CLIP ViT-B/32",
+    }
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=mock_type),
         patch("app.services.analyzer.detect_faces", return_value=faces),
         patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
         patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
@@ -148,6 +168,7 @@ def test_analyzer_minor_risk(test_image_rgb):
         "landmarks_inside_image": True,
     }
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=faces),
         patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
         patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
@@ -170,6 +191,7 @@ def test_analyzer_poor_visibility(test_image_rgb):
         "landmarks_inside_image": True,
     }
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=faces),
         patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
         patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
@@ -190,6 +212,7 @@ def test_analyzer_attribute_extraction_exception(test_image_rgb):
         "landmarks_inside_image": True,
     }
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=faces),
         patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
         patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
@@ -214,6 +237,7 @@ def test_analyzer_age_not_available(test_image_rgb):
         "landmarks_inside_image": True,
     }
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=faces),
         patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
         patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
@@ -287,6 +311,7 @@ def test_analyzer_yunet_detected_face_demographics_flow(test_image_rgb):
         "landmarks_inside_image": True,
     }
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=[yunet_face]),
         patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
         patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
@@ -313,6 +338,7 @@ def test_analyzer_age_unsure_rejected(test_image_rgb):
         "landmarks_inside_image": True,
     }
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=faces),
         patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
         patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
@@ -344,3 +370,67 @@ def test_analyzer_classification_uncertain_fails_closed(test_image_rgb):
         assert result["accepted"] is False
         assert result["posting_status"] == "NON_PHOTO_WARNING"
         assert "uncertain" in result["reason"].lower()
+
+
+def test_resolve_executed_models_all_branches():
+    from app.services.analyzer import _resolve_executed_models
+
+    image_type_clip = {"model_executed": "OpenAI CLIP ViT-B/32"}
+    # 1. Base with no models running
+    with (
+        patch("app.services.analyzer.get_face_app", return_value=None),
+        patch("app.services.analyzer.get_yunet_detector", return_value=None),
+        patch("app.services.analyzer.get_yolo_session", return_value=None),
+        patch("app.services.analyzer.get_anime_face_session", return_value=None),
+        patch("app.services.analyzer.get_genderage_session", return_value=None),
+    ):
+        models = _resolve_executed_models(
+            image_type_clip,
+            has_ran_face_detection=True,
+            has_ran_entity_detection=True,
+            has_ran_demographics=True,
+        )
+        assert "Image Information & Entropy Analyzer" in models
+        assert "OpenAI CLIP ViT-B/32" in models
+        assert len(models) == 2
+
+    # 2. InsightFace & all sessions active
+    with (
+        patch("app.services.analyzer.get_face_app", return_value=MagicMock()),
+        patch("app.services.analyzer.get_yolo_session", return_value=MagicMock()),
+        patch("app.services.analyzer.get_anime_face_session", return_value=MagicMock()),
+        patch("app.services.analyzer.get_genderage_session", return_value=MagicMock()),
+    ):
+        models = _resolve_executed_models(
+            image_type_clip,
+            has_ran_face_detection=True,
+            has_ran_entity_detection=True,
+            has_ran_demographics=True,
+        )
+        assert "InsightFace Face Detector" in models
+        assert "Ultralytics YOLOv8n (COCO)" in models
+        assert "DeepGHS Anime Face Detector (v1.4n)" in models
+        assert "InsightFace GenderAge (multitask CNN)" in models
+
+
+def test_analyzer_single_human_face_with_non_human_faces(test_image_rgb):
+    faces = [MockFace(bbox=[50, 50, 150, 150], age=25.0)]
+    mock_animal = [
+        {
+            "face_type": "animal",
+            "label": "Dog",
+            "confidence": 0.95,
+            "box_xyxy": [250, 250, 350, 350],
+        }
+    ]
+    with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
+        patch("app.services.analyzer.detect_faces", return_value=faces),
+        patch("app.services.analyzer.detect_non_human_entities", return_value=mock_animal),
+    ):
+        result = analyze_profile_photo_image(test_image_rgb)
+        assert result["accepted"] is False
+        assert result["real_human_face_count"] == 1
+        assert result["other_face_count"] == 1
+        assert result["posting_status"] == "NON_PHOTO_WARNING"
+        assert "One human face detected, but image also contains 1 non-human face(s)" in result["reason"]

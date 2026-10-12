@@ -61,7 +61,14 @@ class Settings(BaseSettings):
     FAIRFACE_MODEL_NAME: str = "dima806/fairface_age_image_detection"
     FORCE_CPU: bool = True
 
-    CORS_ORIGINS: list[str] = ["*"]
+    # Production Controls: Rate Limiting & Auth & Concurrency
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_PER_MINUTE: int = 60
+    MAX_CONCURRENT_REQUESTS: int = 10
+    API_KEY: str | None = None
+    API_KEY_HEADER: str = "X-API-Key"
+
+    CORS_ORIGINS: list[str] = ["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:3000"]
     CORS_ALLOW_CREDENTIALS: bool = False
 
 

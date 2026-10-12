@@ -50,6 +50,7 @@ def test_possible_minor_age_group():
 
 def test_extract_face_attributes():
     face_female = MockFace(age=24.0, gender=0)
+    face_female.age_confidence = 0.85
     age_grp, conf, gender_str = extract_face_attributes(face_female)
     assert age_grp == "24 to 27"
     assert conf == 0.85
@@ -58,6 +59,7 @@ def test_extract_face_attributes():
     face_male = MockFace(age=42.0, gender=1)
     age_grp, conf, gender_str = extract_face_attributes(face_male)
     assert age_grp == "42 to 45"
+    assert conf is None
     assert gender_str == "male-presentation prediction"
 
     # Face without attributes
@@ -219,7 +221,7 @@ def test_predict_face_demographics_bare_face_obj():
         assert age_grp == "24 to 27"
         assert est_age == 24.0
         assert gender_str == "female-presentation prediction"
-        assert age_conf is not None
+        assert age_conf is None
         assert gender_conf is not None
 
 
