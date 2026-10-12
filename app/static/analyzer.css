@@ -330,6 +330,7 @@ button.ghost:hover:not(:disabled) { background: var(--neutral-bg); }
 
 .scan-laser {
     position: absolute;
+    top: 0;
     left: 0;
     right: 0;
     z-index: 30;
@@ -340,9 +341,10 @@ button.ghost:hover:not(:disabled) { background: var(--neutral-bg); }
     animation: scan 2.2s ease-in-out infinite;
 }
 
+/* The line sweeps from the top edge to the bottom edge of the photo and back. */
 @keyframes scan {
-    0%, 100% { top: 0%; opacity: 0.7; }
-    50% { top: 98%; opacity: 1; }
+    0%, 100% { top: 0; opacity: 0.7; }
+    50% { top: calc(100% - 3px); opacity: 1; }
 }
 
 /* ---- Cards and chips ----------------------------------------------------------------------------- */
@@ -429,5 +431,7 @@ details.technical summary {
 .footer { padding: 0 8px; text-align: center; }
 
 @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+    /* The scanning line is the only progress indicator while a photo is analysed, so it keeps running (slowly). */
+    *, *::before, *::after { transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+    .scan-laser { animation-duration: 4s; }
 }
