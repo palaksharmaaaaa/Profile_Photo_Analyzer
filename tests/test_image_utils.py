@@ -12,8 +12,8 @@ from app.services.image_utils import (
     bgr_to_base64_jpeg,
     box_center_inside,
     box_iou,
+    box_to_percent,
     clamp_box,
-    compute_normalized_box,
     crop_square,
     decode_image_bytes,
     pil_to_bgr,
@@ -54,7 +54,7 @@ def test_decode_plain_jpeg():
     decoded = decode_image_bytes(encode(Image.new("RGB", (64, 48), "red"), "JPEG"))
     assert decoded.image.size == (64, 48)
     assert decoded.image.mode == "RGB"
-    assert decoded.format_detected == "image/jpeg"
+    assert decoded.file_format == "image/jpeg"
     assert (decoded.original_width, decoded.original_height) == (64, 48)
     assert decoded.exif_orientation_applied is False
     assert decoded.downscaled is False
@@ -87,7 +87,7 @@ def test_decode_animated_gif_uses_first_frame():
     frames = [Image.new("RGB", (16, 16), "red"), Image.new("RGB", (16, 16), "green")]
     payload = encode(frames[0], "GIF", save_all=True, append_images=frames[1:])
     decoded = decode_image_bytes(payload)
-    assert decoded.format_detected == "image/gif"
+    assert decoded.file_format == "image/gif"
     assert decoded.image.size == (16, 16)
 
 
@@ -151,9 +151,9 @@ def test_clamp_box():
     assert clamp_box([150, 150, 160, 160], 100, 80) == (99, 79, 100, 80)
 
 
-def test_compute_normalized_box():
-    assert compute_normalized_box([10, 20, 50, 60], 100, 200) == [10.0, 10.0, 30.0, 50.0]
-    assert compute_normalized_box([0, 0, 1, 1], 0, 100) == [0.0, 0.0, 0.0, 0.0]
+def test_box_to_percent_is_x1_y1_x2_y2():
+    assert box_to_percent([10, 20, 50, 60], 100, 200) == [10.0, 10.0, 50.0, 30.0]
+    assert box_to_percent([0, 0, 1, 1], 0, 100) == [0.0, 0.0, 0.0, 0.0]
 
 
 def test_crop_square_is_square_and_expands_by_margin():

@@ -8,27 +8,26 @@ import cv2
 import numpy as np
 
 from app.core.config import settings
+from app.schemas.analysis import NOT_DETECTED, UNSURE
 from app.services.image_utils import box_iou, clamp_box
 from app.services.model_manager import MODEL_SPECS, get_session, get_yunet_detector, yunet_lock
 
 logger = logging.getLogger(__name__)
 
-NOT_AVAILABLE = "Not available"
-NOT_DETECTED = "Not Detected"
-UNSURE = "Unsure"
-
 MODEL_NAME_SCRFD = MODEL_SPECS["scrfd"].display_name
 MODEL_NAME_YUNET = MODEL_SPECS["yunet"].display_name
 MODEL_NAME_AGE_GENDER = MODEL_SPECS["mivolo"].display_name
 
-MIN_VISIBLE_FRACTION = 0.25
-SCRFD_STRIDES = (8, 16, 32)
-SCRFD_MIN_SIZE = 640
-SCRFD_MAX_SIZE = 1280
-SCRFD_NMS_IOU = 0.4
+# Face detection
+MIN_VISIBLE_FRACTION = 0.25  # a detection with less than this share of its box inside the image is dropped
+SCRFD_STRIDES = (8, 16, 32)  # SCRFD predicts on three feature maps
+SCRFD_MIN_SIZE = 640  # SCRFD input is a square canvas of at least this side...
+SCRFD_MAX_SIZE = 1280  # ...and at most this side (a multiple of 32)
+SCRFD_NMS_IOU = 0.4  # candidates overlapping more than this are the same face
 
-MIVOLO_SIZE = 384
-MIVOLO_AGE_SCALE = 122.0  # raw head output -> years: raw * (max_age - min_age) + avg_age
+# MiVOLO v2 age/gender
+MIVOLO_SIZE = 384  # face and body crops are each letterboxed to 384 x 384
+MIVOLO_AGE_SCALE = 122.0  # the model's raw age output maps to years as raw * 122 + 61
 MIVOLO_AGE_OFFSET = 61.0
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -51,7 +50,7 @@ class Demographics:
     age_group: str = NOT_DETECTED
     estimated_age: float | None = None
     age_range: list[float] | None = None  # 80% interval, years
-    age_confidence: float | None = None  # probability that the true age lies in age_group
+    age_group_probability: float | None = None  # probability that the true age lies in age_group
     p_under_18: float | None = None
     age_status: str = NOT_DETECTED
     gender: str = NOT_DETECTED
@@ -278,7 +277,9 @@ def _estimate_age(ages: np.ndarray, result: Demographics) -> float:
         low, high = _group_bounds(group)
         result.age_group, result.age_status = group, "Estimated"
         result.estimated_age = round(mean_age, 1)
-        result.age_confidence = round(_normal_cdf((high - mean_age) / sigma) - _normal_cdf((low - mean_age) / sigma), 4)
+        result.age_group_probability = round(
+            _normal_cdf((high - mean_age) / sigma) - _normal_cdf((low - mean_age) / sigma), 4
+        )
         half = settings.AGE_INTERVAL_Z * sigma
         result.age_range = [round(max(0.0, mean_age - half), 1), round(min(100.0, mean_age + half), 1)]
     return mean_age

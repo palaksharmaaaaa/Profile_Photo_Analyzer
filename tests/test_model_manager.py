@@ -34,9 +34,9 @@ def test_downloadable_models_are_hash_pinned_and_built_models_are_not_downloadab
 
 def test_expected_sha256_prefers_registry_then_manifest(models_dir):
     assert mm.expected_sha256(mm.MODEL_SPECS["yolox"].filename) == mm.MODEL_SPECS["yolox"].sha256
-    assert mm.expected_sha256("age_gender_vit_int8.onnx") is None
-    write_manifest(models_dir, "age_gender_vit_int8.onnx", b"abc")
-    assert mm.expected_sha256("age_gender_vit_int8.onnx") == sha(b"abc")
+    assert mm.expected_sha256("built_model.onnx") is None
+    write_manifest(models_dir, "built_model.onnx", b"abc")
+    assert mm.expected_sha256("built_model.onnx") == sha(b"abc")
 
 
 def test_manifest_with_garbage_is_ignored(models_dir):

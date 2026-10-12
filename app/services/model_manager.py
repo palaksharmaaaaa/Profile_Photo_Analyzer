@@ -1,4 +1,4 @@
-"""Model registry, integrity verification, lazy loading and (where licensed) downloading of ONNX models."""
+"""The model registry: where each ONNX model lives, integrity checks, lazy loading and downloading."""
 
 import hashlib
 import json
@@ -25,9 +25,9 @@ LABEL_BANK_NAME = "label_embeddings.npz"
 class ModelSpec:
     """A model the pipeline can use.
 
-    ``url`` is set only for models that can be fetched as-is. Models derived locally (quantised or
-    pre-embedded) have ``url=None`` and are produced by ``scripts/build_models.py``; their SHA-256 is
-    then taken from ``models/manifest.json`` written by that script.
+    ``url`` is set for models that can be downloaded as they are, pinned by ``sha256``. Models built
+    locally (SigLIP2 and its label embeddings, MiVOLO, SCRFD) have ``url=None``: ``scripts/build_models.py``
+    creates them and records their SHA-256 in ``models/manifest.json``, which is checked when they load.
     """
 
     key: str

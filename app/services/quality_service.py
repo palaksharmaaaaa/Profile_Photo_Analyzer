@@ -6,9 +6,9 @@ import numpy as np
 from app.core.config import settings
 from app.services.image_utils import clamp_box
 
-INFO_ANALYSIS_MAX_SIDE = 512
-SHARPNESS_REFERENCE_SIZE = 112
-DEMOGRAPHICS_MAX_YAW_RATIO = 0.60
+INFO_ANALYSIS_MAX_SIDE = 512  # the information check runs on a copy no larger than this
+SHARPNESS_REFERENCE_SIZE = 112  # faces are resized to this before measuring sharpness (resolution independent)
+DEMOGRAPHICS_MAX_YAW_RATIO = 0.60  # beyond this head turn, age and gender are not estimated at all
 
 
 def check_image_information(image_bgr: np.ndarray) -> dict[str, Any]:
@@ -136,15 +136,15 @@ def assess_face_quality(image_bgr: np.ndarray, face_box: list, landmarks: np.nda
         return {
             "status": "UNCERTAIN",
             "reason": "Invalid face bounding box.",
-            "face_box_touches_image_edge": True,
-            "sharpness_score": 0.0,
+            "touches_image_edge": True,
+            "sharpness": 0.0,
             "landmarks_available": False,
             "landmarks_inside_image": False,
-            "brightness_score": 0.0,
+            "brightness": 0.0,
             "face_area_ratio": 0.0,
             "yaw_ratio": None,
-            "face_min_side_px": 0,
-            "demographics_usable": False,
+            "min_side_px": 0,
+            "usable_for_demographics": False,
             "demographics_caveat": "Invalid face bounding box.",
         }
 
@@ -175,14 +175,14 @@ def assess_face_quality(image_bgr: np.ndarray, face_box: list, landmarks: np.nda
     return {
         "status": status,
         "reason": reason,
-        "face_box_touches_image_edge": touches_edge,
-        "sharpness_score": round(sharpness, 2),
+        "touches_image_edge": touches_edge,
+        "sharpness": round(sharpness, 2),
         "landmarks_available": landmarks_available,
         "landmarks_inside_image": landmarks_inside,
-        "brightness_score": round(brightness, 2),
+        "brightness": round(brightness, 2),
         "face_area_ratio": round(face_area_ratio, 4),
         "yaw_ratio": None if yaw_ratio is None else round(yaw_ratio, 3),
-        "face_min_side_px": min_side,
-        "demographics_usable": caveat is None,
+        "min_side_px": min_side,
+        "usable_for_demographics": caveat is None,
         "demographics_caveat": caveat,
     }

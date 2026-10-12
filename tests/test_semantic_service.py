@@ -89,7 +89,7 @@ def test_embed_images_survives_inference_failure():
 def test_classify_embeddings_scores_margin_and_probabilities(label_bank):
     results = ss.classify_embeddings(np.stack([one_hot("face", "real_human"), one_hot("face", "bird")]), "face")
     human, bird = results
-    assert human.name == "real_human" and human.face_type == "human"
+    assert human.name == "real_human" and human.kind == "human"
     assert human.probability > 0.99 and human.margin > 0.98
     assert bird.name == "bird"
     assert abs(sum(human.probabilities.values()) - 1.0) < 0.01

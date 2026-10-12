@@ -1,29 +1,34 @@
+# Python
 venv/
 .venv/
 __pycache__/
 *.py[cod]
+
+# Local configuration and editor files
 .env
 .env.*
 !.env.example
 .idea/
 .vscode/
 .DS_Store
-uploads/
 *.log
 *.zip
 
-# Testing & Coverage
+# Tests, coverage and linters
 .coverage
 .coverage.*
 coverage.xml
 htmlcov/
 .pytest_cache/
+.ruff_cache/
 
-# SonarQube Scanner
+# SonarQube scanner
 .scannerwork/
 .sonar/
 
-# Model binaries
+# Models: the ONNX files are built or downloaded (see scripts/build_models.py);
+# manifest.json and label_embeddings.npz are small and are committed
 models/*.onnx
-# One-time model build scratch
+
+# Scratch space for one-time model builds
 .model_build/

@@ -28,7 +28,7 @@ class SemanticResult:
 
     name: str
     display: str
-    face_type: str
+    kind: str
     probability: float  # softmax share among the prompts (a relative score, not a calibrated probability)
     margin: float  # probability gap between the best and the second-best class
     probabilities: dict[str, float]
@@ -126,7 +126,7 @@ def classify_embeddings(embeddings: np.ndarray, taxonomy: str) -> list[SemanticR
             SemanticResult(
                 name=best.name,
                 display=best.display,
-                face_type=best.face_type,
+                kind=best.kind,
                 probability=round(float(probs[order[0]]), 4),
                 margin=round(float(probs[order[0]]) - runner_up, 4),
                 probabilities={n: round(float(p), 4) for n, p in zip(names, probs, strict=True)},

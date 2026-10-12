@@ -7,7 +7,7 @@ from dataclasses import dataclass
 class LabelClass:
     name: str  # stable machine name
     display: str  # user-facing label
-    face_type: str  # category reported in the API ("human" for real human faces)
+    kind: str  # what the class is: the API face type ("human", "animal", ...) or an image group ("photo", "synthetic")
     prompts: tuple[str, ...]
 
 

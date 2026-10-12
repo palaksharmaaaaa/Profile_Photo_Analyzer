@@ -25,7 +25,7 @@ class DecodedImage:
     """A decoded working image together with facts about the original upload."""
 
     image: Image.Image
-    format_detected: str
+    file_format: str
     original_width: int
     original_height: int
     exif_orientation_applied: bool
@@ -72,7 +72,7 @@ def decode_image_bytes(contents: bytes) -> DecodedImage:
     flattens transparency, uses the first frame of animations and caps the working size.
     """
     try:
-        format_detected = sniff_image_magic_bytes(contents)
+        file_format = sniff_image_magic_bytes(contents)
     except ValueError as exc:
         raise InvalidImageError(str(exc)) from exc
 
@@ -114,7 +114,7 @@ def decode_image_bytes(contents: bytes) -> DecodedImage:
 
     return DecodedImage(
         image=rgb,
-        format_detected=format_detected,
+        file_format=file_format,
         original_width=width,
         original_height=height,
         exif_orientation_applied=orientation not in (0, 1),
@@ -172,17 +172,17 @@ def crop_square(image_bgr: np.ndarray, box: list[int], margin: float) -> np.ndar
     return image_bgr[top + pad : bottom + pad, left + pad : right + pad]
 
 
-def compute_normalized_box(box: list[int], width: int, height: int) -> list[float]:
-    """Relative box percentages [ymin%, xmin%, ymax%, xmax%] for CSS overlay positioning."""
+def box_to_percent(box: list[int], width: int, height: int) -> list[float]:
+    """A pixel box as [x1, y1, x2, y2] in percent of the image, for positioning overlays in the browser."""
     if width <= 0 or height <= 0:
         return [0.0, 0.0, 0.0, 0.0]
 
     x1, y1, x2, y2 = clamp_box(box, width, height)
     return [
-        round(max(0.0, min(100.0, (y1 / height) * 100.0)), 2),
-        round(max(0.0, min(100.0, (x1 / width) * 100.0)), 2),
-        round(max(0.0, min(100.0, (y2 / height) * 100.0)), 2),
-        round(max(0.0, min(100.0, (x2 / width) * 100.0)), 2),
+        round(x1 / width * 100.0, 2),
+        round(y1 / height * 100.0, 2),
+        round(x2 / width * 100.0, 2),
+        round(y2 / height * 100.0, 2),
     ]
 
 

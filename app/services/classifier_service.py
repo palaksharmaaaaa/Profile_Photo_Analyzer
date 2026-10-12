@@ -1,4 +1,7 @@
-"""Image-type screening, non-human entity localisation and crop-level human-face verification."""
+"""
+What is in the image: whole-image type, animals / people / anime faces (detectors), and the verdict on each
+crop (real human face, animal, cartoon, ...) from SigLIP2.
+"""
 
 import logging
 from functools import lru_cache
@@ -33,11 +36,13 @@ COCO_ANIMAL_CLASSES: dict[int, tuple[str, str]] = {
 }
 
 PERSON_CLASS: dict[int, tuple[str, str]] = {0: ("person", "Person")}
-DETECTOR_INPUT = 640
-LETTERBOX_PAD = 114
+DETECTOR_INPUT = 640  # YOLOX and the anime detector take a 640 x 640 letterboxed image
+LETTERBOX_PAD = 114  # grey padding value used when letterboxing
+# The two groups of whole-image types (see label_prompts.IMAGE_CLASSES)
 PHOTO_GROUP = "photo"
 SYNTHETIC_GROUP = "synthetic"
 
+# Verdict on one crop
 VERDICT_HUMAN = "human"
 VERDICT_NON_HUMAN = "non_human"
 VERDICT_NOT_FACE = "not_face"
@@ -53,55 +58,46 @@ VERDICT_UNAVAILABLE = "unavailable"
 def _unavailable_image_type() -> dict[str, Any]:
     return {
         "status": "UNCERTAIN",
-        "top_class": "Unavailable",
-        "top_class_confidence": None,
-        "photo_score": None,
-        "cartoon_score": None,
-        "display_label": "Uncertain",
-        "model_executed": None,
-        "all_predictions": [],
-        "scores": {},
+        "label": "Uncertain",
+        "photo_share": None,
+        "synthetic_share": None,
+        "predictions": [],
+        "model": None,
         "reason": "The SigLIP2 image-type model is unavailable, so the image type was not checked.",
     }
 
 
 def classify_image_type(image_bgr: np.ndarray) -> dict[str, Any]:
-    """Classify the whole upload as photograph vs cartoon/anime/painting/3D/diagram."""
+    """Classify the whole upload as a photograph or as a cartoon, anime, painting, 3D render or diagram."""
     results = semantic_service.classify_images([image_bgr], "image")
     if not results:
         return _unavailable_image_type()
 
     result = results[0]
     classes = {c.name: c for c in semantic_service.IMAGE_CLASSES}
-    photo_mass = sum(p for n, p in result.probabilities.items() if classes[n].face_type == PHOTO_GROUP)
-    synthetic_mass = sum(p for n, p in result.probabilities.items() if classes[n].face_type == SYNTHETIC_GROUP)
+    photo_share = sum(p for name, p in result.probabilities.items() if classes[name].kind == PHOTO_GROUP)
+    synthetic_share = sum(p for name, p in result.probabilities.items() if classes[name].kind == SYNTHETIC_GROUP)
 
-    if photo_mass >= settings.IMAGE_TYPE_MIN_MASS:
-        status, reason = "PHOTO_LIKE", "Most of the probability mass is on photographic image types."
-    elif synthetic_mass >= settings.IMAGE_TYPE_MIN_MASS:
-        status, reason = "NON_PHOTO", "Most of the probability mass is on illustrated, painted or computer-made types."
+    if photo_share >= settings.IMAGE_TYPE_MIN_SHARE:
+        status, reason = "PHOTO_LIKE", "Most of the probability is on photographic image types."
+    elif synthetic_share >= settings.IMAGE_TYPE_MIN_SHARE:
+        status, reason = "NON_PHOTO", "Most of the probability is on drawn, painted or computer-made image types."
     else:
         status, reason = "NEEDS_REVIEW", "The image type could not be determined confidently."
 
-    predictions = sorted(
-        ({"label": classes[n].display, "confidence": p} for n, p in result.probabilities.items()),
-        key=lambda item: item["confidence"],
-        reverse=True,
-    )
+    ranked = sorted(result.probabilities.items(), key=lambda item: item[1], reverse=True)
+    predictions = [{"label": classes[name].display, "probability": probability} for name, probability in ranked]
+
+    # The label names the best class inside the winning group, so it never contradicts the status.
     winning_group = {"PHOTO_LIKE": PHOTO_GROUP, "NON_PHOTO": SYNTHETIC_GROUP}.get(status)
-    ranked = sorted(result.probabilities.items(), key=lambda kv: -kv[1])
-    shown_name = next((n for n, _ in ranked if classes[n].face_type == winning_group), result.name)
-    shown = classes[shown_name]
+    shown = next((classes[name] for name, _ in ranked if classes[name].kind == winning_group), classes[result.name])
     return {
         "status": status,
-        "top_class": shown.display,
-        "top_class_confidence": result.probabilities[shown.name],
-        "photo_score": round(photo_mass, 4),
-        "cartoon_score": round(synthetic_mass, 4),
-        "display_label": shown.display,
-        "model_executed": MODEL_NAME_SIGLIP,
-        "all_predictions": predictions,
-        "scores": {item["label"]: item["confidence"] for item in predictions},
+        "label": shown.display,
+        "photo_share": round(photo_share, 4),
+        "synthetic_share": round(synthetic_share, 4),
+        "predictions": predictions,
+        "model": MODEL_NAME_SIGLIP,
         "reason": reason,
     }
 
@@ -126,7 +122,7 @@ def _verdict_from_probabilities(result: semantic_service.SemanticResult) -> dict
                 return {
                     **base,
                     "verdict": VERDICT_NOT_FACE,
-                    "face_type": result.face_type,
+                    "face_type": result.kind,
                     "label": result.display,
                     "confidence": result.probability,
                 }
@@ -134,7 +130,7 @@ def _verdict_from_probabilities(result: semantic_service.SemanticResult) -> dict
             return {
                 **base,
                 "verdict": VERDICT_NON_HUMAN,
-                "face_type": result.face_type,
+                "face_type": result.kind,
                 "label": result.display,
                 "confidence": result.probability,
             }

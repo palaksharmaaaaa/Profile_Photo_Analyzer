@@ -231,9 +231,6 @@ def main() -> None:
     for name in built:
         if name.endswith(".onnx"):
             manifest["files"][name] = {"sha256": sha256_of(models / name), "size": (models / name).stat().st_size}
-    # drop entries of models that are no longer part of the pipeline
-    manifest["files"].pop("age_gender_vit_int8.onnx", None)
-    manifest.pop("quantisation_validation", None)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print("built:", ", ".join([*built, OUT_MANIFEST]))
 

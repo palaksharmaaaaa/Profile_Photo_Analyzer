@@ -2,11 +2,13 @@ import hmac
 import logging
 import time
 from collections import defaultdict
+from pathlib import Path
 from threading import RLock
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.routes import router
@@ -22,10 +24,12 @@ _active_requests: int = 0
 
 
 EXEMPT_PATHS: frozenset[str] = frozenset({"/", "/health", "/docs", "/openapi.json"})
+STATIC_PREFIX = "/static/"  # the page's own stylesheet and script: never authenticated or rate limited
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 class ProductionSecurityMiddleware(BaseHTTPMiddleware):
-    """Enforce API authentication, rate limiting, and concurrency limits."""
+    """API-key authentication, per-IP rate limiting and a concurrency limit for the analysis endpoint."""
 
     @staticmethod
     def _verify_api_key(request: Request) -> JSONResponse | None:
@@ -93,7 +97,7 @@ class ProductionSecurityMiddleware(BaseHTTPMiddleware):
         global _active_requests
 
         path = request.url.path
-        is_exempt = path in EXEMPT_PATHS
+        is_exempt = path in EXEMPT_PATHS or path.startswith(STATIC_PREFIX)
 
         # 1. API key authentication check (if configured)
         if settings.API_KEY and not is_exempt:
@@ -149,6 +153,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     application.include_router(router)
     return application
 

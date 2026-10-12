@@ -6,6 +6,7 @@ from fastapi import APIRouter, File, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from app.core.config import settings
+from app.schemas.analysis import AnalysisResponse, ErrorResponse
 from app.services.analyzer import analyze_profile_photo_image
 from app.services.image_utils import InvalidImageError, decode_image_bytes
 from app.services.model_manager import check_models_status
@@ -62,7 +63,11 @@ def _read_and_validate_upload_bytes(file: UploadFile) -> tuple[bytes | None, JSO
     return contents, None
 
 
-@router.post("/analyze-profile-photo")
+@router.post(
+    "/analyze-profile-photo",
+    response_model=AnalysisResponse,
+    responses={400: {"model": ErrorResponse}, 413: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+)
 def analyze_profile_photo(file: Annotated[UploadFile, File()]):
     """
     Synchronous handler (runs in the FastAPI threadpool so inference never blocks the event loop).
@@ -85,10 +90,9 @@ def analyze_profile_photo(file: Annotated[UploadFile, File()]):
         return _error(status.HTTP_400_BAD_REQUEST, exc.reason)
 
     try:
-        result = analyze_profile_photo_image(
-            decoded.image, filename=filename, format_detected=decoded.format_detected, meta=decoded
+        return analyze_profile_photo_image(
+            decoded.image, filename=filename, file_format=decoded.file_format, meta=decoded
         )
-        return JSONResponse(content=result)
     except Exception:
         logger.exception("Analysis error processing uploaded image")
         return _error(status.HTTP_500_INTERNAL_SERVER_ERROR, "Analysis failed. Check server logs.")

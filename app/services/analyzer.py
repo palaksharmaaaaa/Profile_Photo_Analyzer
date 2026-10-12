@@ -1,12 +1,15 @@
-"""End-to-end profile photo analysis.
+"""Profile photo analysis: the orchestrator that ties every model together.
 
-Flow: (1) validated upload -> (2) is there any information? -> (3) find face candidates and verify,
-per face, whether each is a real human face, an animal, a cartoon, ... -> (4) estimate age and gender
-for every verified real human face -> (5) report only what the models actually produced; anything
-they cannot support is reported as "Unsure" or "Not Detected".
+The flow, in the order a request goes through it:
+
+1. the upload is decoded and validated (``image_utils``, called by the API route);
+2. an image with no visual information stops here and no model runs;
+3. face candidates are found (SCRFD + YuNet) together with animals, birds and people (YOLOX) and anime faces;
+   every candidate crop is then verified by SigLIP2 as a real human face, an animal, a cartoon, ... or "unsure";
+4. every verified real human face gets a quality check, an age and a gender (MiVOLO v2);
+5. the response reports only what the models produced; whatever they cannot support is "Unsure" or "Not Detected".
 """
 
-import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -15,6 +18,7 @@ import numpy as np
 from PIL import Image
 
 from app.core.config import settings
+from app.schemas.analysis import NOT_DETECTED, UNSURE, Status
 from app.services import semantic_service
 from app.services.classifier_service import (
     MODEL_NAME_SIGLIP,
@@ -27,14 +31,7 @@ from app.services.classifier_service import (
     classify_image_type,
     detect_entities_and_persons,
 )
-from app.services.face_service import (
-    NOT_AVAILABLE,
-    NOT_DETECTED,
-    UNSURE,
-    DetectedFace,
-    detect_faces,
-    predict_face_demographics,
-)
+from app.services.face_service import DetectedFace, detect_faces, predict_face_demographics
 from app.services.image_utils import (
     BoxItem,
     DecodedImage,
@@ -42,47 +39,59 @@ from app.services.image_utils import (
     bgr_to_base64_jpeg,
     box_center_inside,
     box_iou,
+    box_to_percent,
     clamp_box,
-    compute_normalized_box,
     pil_to_bgr,
 )
 from app.services.quality_service import assess_face_quality, check_image_information
 
-logger = logging.getLogger(__name__)
-
-COLOR_ORANGE = (0, 140, 255)  # BGR
+# Box colours of the annotated image (BGR).
+COLOR_ORANGE = (0, 140, 255)
 COLOR_GREEN = (0, 180, 0)
 COLOR_PURPLE = (200, 50, 180)
 
-DEFAULT_IMAGE_FORMAT = "image/jpeg"
-MODEL_INFO_ANALYZER = "Image Information & Entropy Analyzer"
-NO_INFO_REASON = "This image has no information to check or process (blank or solid color)."
-ENTITY_MERGE_IOU = 0.30
-ENTITY_DEDUPE_IOU = 0.50
-ROW_BUCKET_PX = 50
-YUNET_SOURCE = "YuNet candidate"
+MODEL_INFO_CHECK = "Image information check (entropy and variance)"
+NO_INFORMATION_REASON = "This image has no information to check or process (blank or solid colour)."
+DEFAULT_FORMAT = "image/jpeg"
+DISCLAIMER = (
+    "Age and gender are appearance-based estimates; the typical age error is several years. "
+    "Keep a separate age-verification process for any strict 18+ policy."
+)
 
-NON_PHOTO_STATUSES = ("NON_PHOTO", "NEEDS_REVIEW", "UNCERTAIN")
+YUNET_SOURCE = "YuNet candidate"
+CARTOON_FAMILY = ("anime", "cartoon_or_illustration", "render_3d", "painting")
+OTHER, UNSURE_BUCKET = "other", "unsure"  # where a verified detector entity is reported
+
+SAME_OBJECT_IOU = 0.30  # overlap at which two reports are the same object
+DUPLICATE_IOU = 0.50  # overlap at which two animal reports are duplicates
+ROW_HEIGHT_PX = 50  # faces within this vertical distance count as one reading row
+IMAGE_TYPES_NEEDING_REVIEW = ("NON_PHOTO", "NEEDS_REVIEW", "UNCERTAIN")
 
 
 @dataclass
 class FaceCensus:
     """Everything found in the image, grouped by what each detection was verified to be."""
 
-    humans: list[tuple[DetectedFace, dict[str, Any]]] = field(default_factory=list)
-    persons: list[list[int]] = field(default_factory=list)
-    others: list[dict[str, Any]] = field(default_factory=list)
-    unsure: list[dict[str, Any]] = field(default_factory=list)
-    rejected: int = 0
-    models: list[str] = field(default_factory=list)
+    humans: list[tuple[DetectedFace, dict[str, Any]]] = field(default_factory=list)  # (face, verification verdict)
+    others: list[dict[str, Any]] = field(default_factory=list)  # animals, birds, cartoons, ...
+    unsure: list[dict[str, Any]] = field(default_factory=list)  # could not be verified either way
+    persons: list[list[int]] = field(default_factory=list)  # person boxes, used as body crops for the age model
+    rejected: int = 0  # detections discarded as false positives
+    models: list[str] = field(default_factory=list)  # models that really ran
     detection_ran: bool = False
 
 
-def _reading_key(box: list[int]) -> tuple[int, int]:
-    return (round(box[1] / ROW_BUCKET_PX), box[0])
+# --------------------------------------------------------------------------------------
+# Building the census: detect, verify, reconcile
+# --------------------------------------------------------------------------------------
 
 
-def _other_item(
+def _reading_order(box: list[int]) -> tuple[int, int]:
+    """Sort key: top to bottom in rows, then left to right."""
+    return round(box[1] / ROW_HEIGHT_PX), box[0]
+
+
+def _other_face(
     box: list[int], face_type: str, label: str, confidence: float | None, source: str, verified_by: str
 ) -> dict[str, Any]:
     return {
@@ -95,148 +104,134 @@ def _other_item(
     }
 
 
-def _unsure_item(box: list[int], verdict: dict[str, Any], det_score: float | None) -> dict[str, Any]:
-    if verdict["verdict"] == VERDICT_UNAVAILABLE:
-        reason = "The verification model is unavailable, so this candidate could not be confirmed as a real human face."
-    else:
-        reason = "The model could not tell with enough certainty whether this is a real human face."
-    return {
-        "label": verdict["label"],
-        "reason": reason,
-        "detection_confidence": det_score,
-        "box_xyxy": box,
-    }
+def _unsure_face(box: list[int], label: str, reason: str, detection_confidence: float | None) -> dict[str, Any]:
+    return {"label": label, "reason": reason, "detection_confidence": detection_confidence, "box_xyxy": box}
 
 
 def _classify_face_candidates(image_bgr: np.ndarray, census: FaceCensus, faces: list[DetectedFace]) -> None:
-    verdicts = classify_boxes(image_bgr, [f.bbox for f in faces])
+    """Sort the detector's face candidates into humans, non-human faces, false positives and unsure."""
+    verdicts = classify_boxes(image_bgr, [face.bbox for face in faces])
     for face, verdict in zip(faces, verdicts, strict=True):
         kind = verdict["verdict"]
         if kind == VERDICT_HUMAN:
             census.humans.append((face, verdict))
         elif kind == VERDICT_NON_HUMAN:
             census.others.append(
-                _other_item(
+                _other_face(
                     face.bbox, verdict["face_type"], verdict["label"], verdict["confidence"], YUNET_SOURCE, "SigLIP2"
                 )
             )
         elif kind == VERDICT_NOT_FACE:
             census.rejected += 1
         else:
-            census.unsure.append(_unsure_item(face.bbox, verdict, face.det_score))
+            reason = (
+                "The verification model is unavailable, so this candidate could not be confirmed as a real human face."
+                if kind == VERDICT_UNAVAILABLE
+                else "The model could not tell with enough certainty whether this is a real human face."
+            )
+            census.unsure.append(_unsure_face(face.bbox, verdict["label"], reason, face.det_score))
 
 
-CARTOON_FAMILY = ("anime", "cartoon_or_illustration", "render_3d", "painting")
-BUCKET_OTHER = "other"
-BUCKET_UNSURE = "unsure"
-
-
-def _entity_item(entity: dict[str, Any], verdict: dict[str, Any]) -> tuple[dict[str, Any], str] | None:
+def _resolve_entity(entity: dict[str, Any], verdict: dict[str, Any]) -> tuple[dict[str, Any], str] | None:
     """
-    Decide what a detector entity really is, using the verdict of its crop.
+    Decide what a detector entity really is, using the verdict on its crop.
 
-    Returns ``(item, bucket)`` or None when the detector fired on a real face / a non-face.
+    Returns ``(item, bucket)`` where bucket says whether it is reported as a non-human face or as unsure, or
+    None when the detector fired on a real human face or on something that is not a face.
     """
     kind = verdict["verdict"]
     entity_type = entity["face_type"]
-    detector_only = _other_item(
+    detector_only = _other_face(
         entity["box_xyxy"], entity_type, entity["label"], entity["confidence"], entity["source"], "detector"
     )
+
     if kind in (VERDICT_HUMAN, VERDICT_NOT_FACE):
         return None
 
     if kind == VERDICT_NON_HUMAN:
-        semantic_type = verdict["face_type"]
-        if entity_type == "anime" and semantic_type in CARTOON_FAMILY:
-            return {**detector_only, "verified_by": "SigLIP2"}, BUCKET_OTHER
-        if entity_type in ("animal", "bird") and semantic_type in ("animal", "bird"):
-            return {**detector_only, "verified_by": "SigLIP2"}, BUCKET_OTHER
-        return (
-            _other_item(
-                entity["box_xyxy"], semantic_type, verdict["label"], verdict["confidence"], entity["source"], "SigLIP2"
-            ),
-            BUCKET_OTHER,
+        verified_type = verdict["face_type"]
+        agrees = (entity_type == "anime" and verified_type in CARTOON_FAMILY) or (
+            entity_type in ("animal", "bird") and verified_type in ("animal", "bird")
         )
+        if agrees:
+            return {**detector_only, "verified_by": "SigLIP2"}, OTHER
+        # The verifier disagrees with the detector's type (e.g. a "dog" that is really a drawing): trust the verifier.
+        item = _other_face(
+            entity["box_xyxy"], verified_type, verdict["label"], verdict["confidence"], entity["source"], "SigLIP2"
+        )
+        return item, OTHER
 
-    # unsure / unavailable
+    # The verifier could not decide (or is unavailable): rely on the detector only when it is trustworthy.
     if entity_type == "anime":
-        # The anime detector alone is not trustworthy on photos (it fires on animals and paintings).
-        return (
-            {
-                "label": "Possible anime/cartoon face (detector only, unverified)",
-                "reason": "Only the anime detector reported this region; the verification model could not confirm it.",
-                "detection_confidence": entity["confidence"],
-                "box_xyxy": entity["box_xyxy"],
-            },
-            BUCKET_UNSURE,
+        # The anime detector alone is not trustworthy on photos: it also fires on animals and paintings.
+        item = _unsure_face(
+            entity["box_xyxy"],
+            "Possible anime/cartoon face (detector only, unverified)",
+            "Only the anime detector reported this region; the verification model could not confirm it.",
+            entity["confidence"],
         )
+        return item, UNSURE_BUCKET
     if (entity["confidence"] or 0.0) < settings.ANIMAL_DETECTOR_ONLY_MIN_CONF:
-        # A weak COCO "dog/cat" on a box the verifier could not confirm is often a face-filling false positive.
-        return (
-            {
-                "label": f"Possible {entity['label'].lower()} (detector only, low confidence)",
-                "reason": "Only the object detector reported this region, with low confidence, and it was not verified.",
-                "detection_confidence": entity["confidence"],
-                "box_xyxy": entity["box_xyxy"],
-            },
-            BUCKET_UNSURE,
+        # A weak COCO "dog/cat" box that the verifier could not confirm is often a face-filling false positive.
+        item = _unsure_face(
+            entity["box_xyxy"],
+            f"Possible {entity['label'].lower()} (detector only, low confidence)",
+            "Only the object detector reported this region, with low confidence, and it was not verified.",
+            entity["confidence"],
         )
-    return detector_only, BUCKET_OTHER
+        return item, UNSURE_BUCKET
+    return detector_only, OTHER
 
 
-def _same_family(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    creature = ("animal", "bird")
-    return a["face_type"] == b["face_type"] or (a["face_type"] in creature and b["face_type"] in creature)
+def _overlaps(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True when two reports are the same object: strong overlap, or the centre of ``a`` lies inside ``b``."""
+    return box_iou(a["box_xyxy"], b["box_xyxy"]) > SAME_OBJECT_IOU or box_center_inside(a["box_xyxy"], b["box_xyxy"])
 
 
-def _duplicate_entities(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    if box_iou(a["box_xyxy"], b["box_xyxy"]) > ENTITY_DEDUPE_IOU:
+def _is_duplicate_animal(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """The same animal reported twice, e.g. a body box and a face box, or by two detectors."""
+    if box_iou(a["box_xyxy"], b["box_xyxy"]) > DUPLICATE_IOU:
         return True
-    return _same_family(a, b) and (
+    creatures = ("animal", "bird")
+    same_family = a["face_type"] == b["face_type"] or (a["face_type"] in creatures and b["face_type"] in creatures)
+    return same_family and (
         box_center_inside(a["box_xyxy"], b["box_xyxy"]) or box_center_inside(b["box_xyxy"], a["box_xyxy"])
     )
 
 
-def _overlaps(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    return box_iou(a["box_xyxy"], b["box_xyxy"]) > ENTITY_MERGE_IOU or box_center_inside(a["box_xyxy"], b["box_xyxy"])
-
-
 def _merge_entities(image_bgr: np.ndarray, census: FaceCensus, entities: list[dict[str, Any]]) -> None:
-    verdicts = classify_boxes(image_bgr, [e["box_xyxy"] for e in entities])
-    kept: list[dict[str, Any]] = []
+    """Verify the detector entities and reconcile them with the face candidates that are already classified."""
+    verdicts = classify_boxes(image_bgr, [entity["box_xyxy"] for entity in entities])
+    reported: list[dict[str, Any]] = []
     for entity, verdict in zip(entities, verdicts, strict=True):
-        resolved = _entity_item(entity, verdict)
+        resolved = _resolve_entity(entity, verdict)
         if resolved is None:
             census.rejected += 1
             continue
         item, bucket = resolved
-        if bucket == BUCKET_UNSURE:
-            if not any(_overlaps(item, other) for other in census.unsure):
-                census.unsure.append(item)  # the same region may already be listed from the YuNet candidates
-        else:
-            kept.append(item)
+        if bucket == OTHER:
+            reported.append(item)
+        elif not any(_overlaps(item, existing) for existing in census.unsure):
+            census.unsure.append(item)  # the same region may already be listed from the face candidates
 
-    # Same animal reported twice (body box + face box, or two detectors): keep the best-sourced one.
-    kept.sort(key=lambda it: (it["source"] != MODEL_NAME_YOLOX, -(it["confidence"] or 0.0)))
+    # Keep one report per animal; prefer the YOLOX one, then the more confident one.
+    reported.sort(key=lambda item: (item["source"] != MODEL_NAME_YOLOX, -(item["confidence"] or 0.0)))
     unique: list[dict[str, Any]] = []
-    for item in kept:
-        if not any(_duplicate_entities(item, other) for other in unique):
+    for item in reported:
+        if not any(_is_duplicate_animal(item, kept) for kept in unique):
             unique.append(item)
 
-    # A YuNet candidate already judged non-human/unsure is the same object as an overlapping entity.
+    # A face candidate already judged non-human/unsure is the same object as an overlapping detector entity.
     for item in unique:
-        box = item["box_xyxy"]
-
-        def same_object(other: dict[str, Any], box: list[int] = box) -> bool:
-            return box_iou(box, other["box_xyxy"]) > ENTITY_MERGE_IOU or box_center_inside(other["box_xyxy"], box)
-
-        census.others = [o for o in census.others if o["source"] != YUNET_SOURCE or not same_object(o)]
-        census.unsure = [u for u in census.unsure if not same_object(u)]
+        census.others = [
+            other for other in census.others if other["source"] != YUNET_SOURCE or not _overlaps(other, item)
+        ]
+        census.unsure = [candidate for candidate in census.unsure if not _overlaps(candidate, item)]
         census.others.append(item)
 
 
 def census_faces(image_bgr: np.ndarray) -> FaceCensus:
-    """Detect all face-like regions and classify each one."""
+    """Detect every face-like region and classify each one."""
     census = FaceCensus()
     faces, face_models = detect_faces(image_bgr)
     entities, persons, entity_models = detect_entities_and_persons(image_bgr)
@@ -246,22 +241,26 @@ def census_faces(image_bgr: np.ndarray) -> FaceCensus:
 
     _classify_face_candidates(image_bgr, census, faces)
     _merge_entities(image_bgr, census, entities)
-
     if semantic_service.is_available():
         census.models.append(MODEL_NAME_SIGLIP)
 
-    census.humans.sort(key=lambda pair: _reading_key(pair[0].bbox))
-    census.others.sort(key=lambda item: _reading_key(item["box_xyxy"]))
-    census.unsure.sort(key=lambda item: _reading_key(item["box_xyxy"]))
+    census.humans.sort(key=lambda pair: _reading_order(pair[0].bbox))
+    census.others.sort(key=lambda item: _reading_order(item["box_xyxy"]))
+    census.unsure.sort(key=lambda item: _reading_order(item["box_xyxy"]))
     return census
+
+
+# --------------------------------------------------------------------------------------
+# Real human faces: quality, age, gender
+# --------------------------------------------------------------------------------------
 
 
 def _match_body(face_box: list[int], persons: list[list[int]]) -> list[int] | None:
     """
     The person box that contains this face and shows a real body (much taller than the face).
 
-    Person boxes that are about as tall as the face (a head-and-shoulders crop, a head-only image) carry no extra
-    information for the age model and are ignored. The tightest qualifying box is used.
+    A person box about as tall as the face (a head-only or head-and-shoulders crop) adds nothing for the age
+    model and is ignored. Among qualifying boxes the tightest one is used.
     """
     face_height = face_box[3] - face_box[1]
     candidates = [
@@ -269,57 +268,65 @@ def _match_body(face_box: list[int], persons: list[list[int]]) -> list[int] | No
         for box in persons
         if box_center_inside(face_box, box) and (box[3] - box[1]) >= settings.BODY_MIN_HEIGHT_RATIO * face_height
     ]
-    return min(candidates, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])) if candidates else None
+    return min(candidates, key=lambda box: (box[2] - box[0]) * (box[3] - box[1])) if candidates else None
 
 
-def _build_human_items(
+def _build_human_faces(
     image_bgr: np.ndarray, humans: list[tuple[DetectedFace, dict[str, Any]]], persons: list[list[int]]
 ) -> tuple[list[dict[str, Any]], str | None]:
+    """Quality check, age and gender for every verified human face. Also returns the age/gender model if it ran."""
     height, width = image_bgr.shape[:2]
-    items: list[dict[str, Any]] = []
+    faces: list[dict[str, Any]] = []
     demographics_model: str | None = None
 
-    for idx, (face, verdict) in enumerate(humans, start=1):
+    for face_id, (face, verdict) in enumerate(humans, start=1):
         box = list(clamp_box(face.bbox, width, height))
         quality = assess_face_quality(image_bgr, box, face.kps)
-        demo = predict_face_demographics(
+        demographics = predict_face_demographics(
             image_bgr,
             box,
-            usable=quality["demographics_usable"],
+            usable=quality["usable_for_demographics"],
             caveat=quality["demographics_caveat"],
             body_box=_match_body(box, persons),
         )
-        demographics_model = demo.model or demographics_model
-        minor_risk = demo.p_under_18 is not None and demo.p_under_18 >= settings.MINOR_RISK_PROBABILITY
-        items.append(
+        demographics_model = demographics.model or demographics_model
+        possible_minor = (
+            demographics.p_under_18 is not None and demographics.p_under_18 >= settings.MINOR_RISK_PROBABILITY
+        )
+        faces.append(
             {
-                "face_id": idx,
+                "face_id": face_id,
                 "box_xyxy": box,
-                "box_normalized": compute_normalized_box(box, width, height),
+                "box_percent": box_to_percent(box, width, height),
                 "detection_confidence": face.det_score,
                 "verification_confidence": verdict["confidence"],
-                "gender": demo.gender,
-                "gender_confidence": demo.gender_confidence,
-                "age_group": demo.age_group,
-                "age_status": demo.age_status,
-                "estimated_age": demo.estimated_age,
-                "age_range": demo.age_range,
-                "age_confidence": demo.age_confidence,
-                "p_under_18": demo.p_under_18,
-                "possible_minor_risk": minor_risk,
-                "demographics_notes": demo.notes,
-                "face_visibility": quality,
-                "is_primary": idx == 1,
+                "quality": quality,
+                "gender": demographics.gender,
+                "gender_confidence": demographics.gender_confidence,
+                "age_group": demographics.age_group,
+                "age_status": demographics.age_status,
+                "estimated_age": demographics.estimated_age,
+                "age_range": demographics.age_range,
+                "age_group_probability": demographics.age_group_probability,
+                "p_under_18": demographics.p_under_18,
+                "possible_minor": possible_minor,
+                "notes": demographics.notes,
             }
         )
-    return items, demographics_model
+    return faces, demographics_model
 
 
-def _number_boxes(items: list[dict[str, Any]], width: int, height: int) -> list[dict[str, Any]]:
-    for idx, item in enumerate(items, start=1):
-        item["face_id"] = idx
-        item["box_normalized"] = compute_normalized_box(item["box_xyxy"], width, height)
+def _number_faces(items: list[dict[str, Any]], width: int, height: int) -> list[dict[str, Any]]:
+    """Give non-human and unsure faces their ids (reading order) and percent boxes."""
+    for face_id, item in enumerate(items, start=1):
+        item["face_id"] = face_id
+        item["box_percent"] = box_to_percent(item["box_xyxy"], width, height)
     return items
+
+
+# --------------------------------------------------------------------------------------
+# Decision and response
+# --------------------------------------------------------------------------------------
 
 
 def _decide(
@@ -327,159 +334,152 @@ def _decide(
     others: list[dict[str, Any]],
     unsure: list[dict[str, Any]],
     image_type: dict[str, Any],
-) -> tuple[bool, str, str]:
-    """Profile-photo policy: exactly one verified real human face and nothing doubtful."""
-    other_labels = ", ".join(sorted({o["label"] for o in others}))
-    type_status = image_type.get("status")
-    type_warning = (
-        f"Warning: this looks like a non-photo image ({image_type.get('display_label')}). "
-        if type_status == "NON_PHOTO"
-        else ""
+) -> tuple[Status, str]:
+    """
+    The profile-photo policy: accept only exactly one verified real human face, nothing doubtful around it,
+    good quality, a determinable age and no sign of a minor.
+    """
+    other_labels = ", ".join(sorted({other["label"] for other in others}))
+    non_photo_note = (
+        f"This looks like a non-photo image ({image_type['label']}). " if image_type["status"] == "NON_PHOTO" else ""
     )
 
     if not humans:
         if others:
             return (
-                False,
-                "NON_PHOTO_WARNING",
-                f"{type_warning}No real human face was detected. Found {len(others)} other face(s) ({other_labels}).",
+                Status.ONLY_NON_HUMAN_FACES,
+                f"{non_photo_note}No real human face was detected. Found {len(others)} other face(s): {other_labels}.",
             )
         if unsure:
             return (
-                False,
-                "MANUAL_REVIEW_REQUIRED",
+                Status.REVIEW_REQUIRED,
                 f"{len(unsure)} face candidate(s) could not be verified as real human faces. Manual review is needed.",
             )
-        return False, "NON_PHOTO_WARNING" if type_warning else "REJECTED", f"{type_warning}No human face was detected."
+        return Status.NO_HUMAN_FACE, f"{non_photo_note}No human face was detected."
 
     if len(humans) > 1:
         return (
-            False,
-            "REJECTED",
-            f"{type_warning}A profile photo must contain exactly one real human face; found {len(humans)}.",
+            Status.MULTIPLE_HUMAN_FACES,
+            f"{non_photo_note}A profile photo must contain exactly one real human face; found {len(humans)}.",
         )
 
-    primary = humans[0]
-    visibility = primary["face_visibility"]
-    if type_status in NON_PHOTO_STATUSES:
+    face = humans[0]
+    if image_type["status"] in IMAGE_TYPES_NEEDING_REVIEW:
         return (
-            False,
-            "MANUAL_REVIEW_REQUIRED",
-            f"{type_warning}Image screening ({image_type.get('reason')}) requires human review.",
+            Status.REVIEW_REQUIRED,
+            f"{non_photo_note}Image type screening ({image_type['reason']}) requires a manual review.",
         )
     if others:
         return (
-            False,
-            "NON_PHOTO_WARNING",
-            f"One real human face detected, but the image also contains {len(others)} non-human face(s) ({other_labels}).",
+            Status.NON_HUMAN_FACE_PRESENT,
+            f"One real human face was found, but the image also contains {len(others)} non-human face(s): "
+            f"{other_labels}.",
         )
     if unsure:
         return (
-            False,
-            "MANUAL_REVIEW_REQUIRED",
-            f"One real human face detected, but {len(unsure)} other candidate(s) could not be verified.",
+            Status.REVIEW_REQUIRED,
+            f"One real human face was found, but {len(unsure)} other candidate(s) could not be verified.",
         )
-    if visibility["status"] != "LIKELY_COMPLETE":
-        return False, "REJECTED_OR_REVIEW", f"{visibility['reason']} Please provide a clear, centered, uncropped photo."
-    if primary["age_group"] in (UNSURE, NOT_DETECTED, NOT_AVAILABLE):
+    if face["quality"]["status"] != "LIKELY_COMPLETE":
         return (
-            False,
-            "AGE_ESTIMATION_UNAVAILABLE",
-            "The face was verified, but its age could not be estimated with enough certainty (Unsure).",
+            Status.POOR_FACE_QUALITY,
+            f"{face['quality']['reason']} Please provide a clear, centred, uncropped photo.",
         )
-    if primary["possible_minor_risk"]:
+    if face["age_group"] in (UNSURE, NOT_DETECTED):
+        return Status.AGE_UNSURE, "The face was verified, but its age could not be estimated with enough certainty."
+    if face["possible_minor"]:
         return (
-            False,
-            "AGE_VERIFICATION_REQUIRED",
-            f"There is a {primary['p_under_18']:.0%} estimated chance this person is under 18 "
-            f"(estimated group {primary['age_group']}). Age verification is required.",
+            Status.POSSIBLE_MINOR,
+            f"There is an estimated {face['p_under_18']:.0%} chance that this person is under 18 "
+            f"(estimated age group {face['age_group']}). Age verification is required.",
         )
-    return (
-        True,
-        "INITIAL_CHECKS_PASSED",
-        f"All checks passed. Estimated age group is {primary['age_group']} (appearance-based estimate).",
-    )
+    return Status.PASSED, f"All checks passed. Estimated age group: {face['age_group']} (appearance-based estimate)."
 
 
 def _summary(humans: list[dict[str, Any]], others: list[dict[str, Any]], unsure: list[dict[str, Any]]) -> str:
-    parts = [f"{len(humans)} real human face(s)"]
-    if others:
-        by_label: dict[str, int] = {}
-        for item in others:
-            by_label[item["label"]] = by_label.get(item["label"], 0) + 1
-        parts.append(f"{len(others)} non-human face(s): " + ", ".join(f"{n} x {lbl}" for lbl, n in by_label.items()))
-    else:
-        parts.append("0 non-human faces")
-    parts.append(f"{len(unsure)} unverified candidate(s)")
-    return "; ".join(parts) + "."
+    """One line with the three counts, naming the kinds of non-human faces."""
+    counts: dict[str, int] = {}
+    for other in others:
+        counts[other["label"]] = counts.get(other["label"], 0) + 1
+    non_human = (
+        f"{len(others)} non-human face(s): " + ", ".join(f"{n} x {label}" for label, n in counts.items())
+        if others
+        else "0 non-human faces"
+    )
+    return f"{len(humans)} real human face(s); {non_human}; {len(unsure)} unverified candidate(s)."
 
 
 def _annotate(
-    image_bgr: np.ndarray, humans: list[dict[str, Any]], others: list[dict[str, Any]], unsure, accepted: bool
-):
+    image_bgr: np.ndarray,
+    humans: list[dict[str, Any]],
+    others: list[dict[str, Any]],
+    unsure: list[dict[str, Any]],
+) -> np.ndarray:
+    """Draw the faces: green = real human, purple = non-human, orange = could not be verified."""
     items: list[BoxItem] = []
-    for h in humans:
-        text = f"#{h['face_id']} {h['gender']} {h['age_group']}"
-        items.append((h["box_xyxy"], text, COLOR_GREEN if accepted else COLOR_ORANGE))
-    for o in others:
-        items.append((o["box_xyxy"], f"{o['label']}", COLOR_PURPLE))
-    for u in unsure:
-        items.append((u["box_xyxy"], "UNSURE", COLOR_ORANGE))
+    for face in humans:
+        items.append((face["box_xyxy"], f"#{face['face_id']} {face['gender']} {face['age_group']}", COLOR_GREEN))
+    items += [(other["box_xyxy"], other["label"], COLOR_PURPLE) for other in others]
+    items += [(candidate["box_xyxy"], "UNSURE", COLOR_ORANGE) for candidate in unsure]
     return annotate_boxes(image_bgr, items)
 
 
-def _steps(
-    has_info: bool, info_detail: str, census: FaceCensus | None, demographics_done: bool
+def _pipeline_steps(
+    info_detail: str, has_information: bool, census: FaceCensus | None, demographics_ran: bool
 ) -> list[dict[str, Any]]:
+    """The four stages shown in the UI stepper, with what each one did."""
     if census is None:
-        detection_status, detection_detail = "skipped", "Skipped due to lack of visual information."
-    else:
-        detection_status = "completed" if census.detection_ran else "failed"
+        detection_status, detection_detail = "skipped", "Skipped because the image has no visual information."
+    elif census.detection_ran:
+        detection_status = "completed"
         detection_detail = (
-            f"{len(census.humans)} real human face(s), {len(census.others)} other face(s), "
+            f"{len(census.humans)} real human face(s), {len(census.others)} non-human face(s), "
             f"{len(census.unsure)} unverified candidate(s)."
-            if census.detection_ran
-            else "Face detection could not run."
         )
+    else:
+        detection_status, detection_detail = "failed", "No face detector could run."
+
+    max_mb = settings.MAX_UPLOAD_BYTES // (1024 * 1024)
     return [
         {
             "step_id": "validate",
             "step_number": 1,
-            "title": "File & Binary Validation",
+            "title": "File check",
             "status": "completed",
-            "detail": f"Authentic binary image validated & decodable within {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.",
+            "detail": f"The file is a valid image within the {max_mb} MB limit.",
         },
         {
             "step_id": "information",
             "step_number": 2,
-            "title": "Visual Information Check",
-            "status": "completed" if has_info else "failed",
+            "title": "Visual information",
+            "status": "completed" if has_information else "failed",
             "detail": info_detail,
         },
         {
             "step_id": "detection",
             "step_number": 3,
-            "title": "Face Detection & Verification",
+            "title": "Faces: detection and verification",
             "status": detection_status,
             "detail": detection_detail,
         },
         {
             "step_id": "demographics",
             "step_number": 4,
-            "title": "Demographics & 3-Year Age Buckets",
-            "status": "completed" if demographics_done else "skipped",
-            "detail": "Age and gender estimated for every verified real human face."
-            if demographics_done
-            else "Skipped (no verified real human face, or the age/gender model is unavailable).",
+            "title": "Age and gender",
+            "status": "completed" if demographics_ran else "skipped",
+            "detail": (
+                "Age (3-year brackets) and gender estimated for every verified real human face."
+                if demographics_ran
+                else "Skipped: no verified real human face, or the age/gender model is unavailable."
+            ),
         },
     ]
 
 
 def _diagnostics(
     bgr: np.ndarray,
-    info: dict[str, Any],
     models: list[str],
-    format_detected: str,
+    file_format: str,
     meta: DecodedImage | None,
     rejected: int,
     elapsed_ms: float,
@@ -493,179 +493,106 @@ def _diagnostics(
         "original_height": meta.original_height if meta else None,
         "exif_orientation_applied": meta.exif_orientation_applied if meta else False,
         "downscaled_for_analysis": meta.downscaled if meta else False,
-        "file_format_detected": format_detected or DEFAULT_IMAGE_FORMAT,
-        "entropy_score": round(float(info.get("entropy", 0.0)), 2),
-        "std_dev_score": round(float(info.get("std_dev", 0.0)), 2),
-        "laplacian_var": round(float(info.get("laplacian_var", 0.0)), 2),
+        "file_format": file_format,
         "rejected_candidate_count": rejected,
         "models_executed": list(dict.fromkeys(models)),
     }
 
 
-def _not_checked_image_type() -> dict[str, Any]:
-    return {
-        "status": "NOT_CHECKED",
-        "top_class": NOT_DETECTED,
-        "top_class_confidence": None,
-        "photo_score": None,
-        "cartoon_score": None,
-        "display_label": "Not checked",
-        "model_executed": None,
-        "all_predictions": [],
-        "scores": {},
-        "reason": "Not checked because the image contains no visual information.",
-    }
-
-
-def _legacy_fields(humans: list[dict[str, Any]], decision_accepted: bool) -> dict[str, Any]:
-    """Single-face convenience fields; multi-face results are described by ``human_faces``."""
-    if len(humans) == 1:
-        h = humans[0]
-        unsure_age = h["age_group"] in (UNSURE, NOT_DETECTED)
-        return {
-            "face_count": 1,
-            "face_visibility": h["face_visibility"],
-            "estimated_age_group": h["age_group"],
-            "age_model_confidence": h["age_confidence"],
-            "age_note": "; ".join(h["demographics_notes"])
-            or "Appearance-based estimate only; not proof of legal age. Age error is typically several years.",
-            "age_prediction_error": "Age could not be determined with enough certainty." if unsure_age else None,
-            "possible_minor_risk": h["possible_minor_risk"],
-            "age_verification_required": h["possible_minor_risk"] or not decision_accepted,
-            "gender_presentation_prediction": h["gender"],
-            "gender_note": "Appearance-based model prediction only; not a confirmed gender identity.",
-            "gender_prediction_error": "Gender could not be determined with enough certainty."
-            if h["gender"] in (UNSURE, NOT_DETECTED)
-            else None,
-            "face_detection_confidence": h["detection_confidence"],
-            "face_box_xyxy": h["box_xyxy"],
-            "age_gender_prediction_performed": h["age_status"] != NOT_DETECTED,
-        }
-    placeholder = NOT_AVAILABLE if humans else NOT_DETECTED
-    note = "Multiple faces: see the per-face results." if humans else "No real human face was verified."
-    return {
-        "face_count": len(humans),
-        "face_visibility": None,
-        "estimated_age_group": placeholder,
-        "age_model_confidence": None,
-        "age_note": note,
-        "age_prediction_error": note,
-        "possible_minor_risk": any(h["possible_minor_risk"] for h in humans),
-        "age_verification_required": True,
-        "gender_presentation_prediction": placeholder,
-        "gender_note": note,
-        "gender_prediction_error": note,
-        "face_detection_confidence": humans[0]["detection_confidence"] if humans else None,
-        "face_box_xyxy": humans[0]["box_xyxy"] if humans else None,
-        "age_gender_prediction_performed": any(h["age_status"] != NOT_DETECTED for h in humans),
-    }
-
-
-def _handle_no_info(
-    bgr: np.ndarray, info: dict[str, Any], filename: str | None, format_detected: str, meta: DecodedImage | None
+def _no_information_response(
+    bgr: np.ndarray, info: dict[str, Any], filename: str | None, file_format: str, meta: DecodedImage | None
 ) -> dict[str, Any]:
-    encoded = bgr_to_base64_jpeg(bgr)
-    legacy = _legacy_fields([], False)
+    image = bgr_to_base64_jpeg(bgr)
     return {
+        "status": Status.NO_INFORMATION,
         "accepted": False,
-        "posting_status": "NO_INFORMATION",
-        "posting_reason": NO_INFO_REASON,
-        "reason": NO_INFO_REASON,
+        "reason": NO_INFORMATION_REASON,
         "summary": "No visual information: nothing was checked.",
-        "has_information": False,
-        "image_info_check": info,
-        "image_type_check": _not_checked_image_type(),
-        "image_type_review_required": False,
-        "face_detected": False,
-        "total_face_count": 0,
         "real_human_face_count": 0,
         "other_face_count": 0,
         "unsure_face_count": 0,
         "human_faces": [],
         "other_faces": [],
         "unsure_faces": [],
-        "pipeline_steps": _steps(False, f"Blank or solid color (Entropy: {info.get('entropy', 0.0):.2f})", None, False),
-        "technical_diagnostics": _diagnostics(bgr, info, [MODEL_INFO_ANALYZER], format_detected, meta, 0, 0.0),
-        "processing_time_ms": 0.0,
-        **legacy,
-        "age_note": "No visual information to analyze.",
-        "face_regions_xyxy": [],
-        "original_image": encoded,
-        "annotated_image": encoded,
+        "image_info": info,
+        "image_type": {
+            "status": "NOT_CHECKED",
+            "label": "Not checked",
+            "photo_share": None,
+            "synthetic_share": None,
+            "predictions": [],
+            "model": None,
+            "reason": "Not checked because the image has no visual information.",
+        },
+        "pipeline_steps": _pipeline_steps(
+            f"Blank or solid colour (entropy {info['entropy']:.2f}).", False, None, False
+        ),
+        "diagnostics": _diagnostics(bgr, [MODEL_INFO_CHECK], file_format, meta, 0, 0.0),
+        "original_image": image,
+        "annotated_image": image,
         "filename": filename,
-        "region_note": "No visual information or structure was found in this image.",
-        "note": "Please upload a photograph with sufficient lighting, contrast, and visual content.",
+        "legend": "No visual information or structure was found in this image.",
+        "disclaimer": "Please upload a photograph with enough light, contrast and visual content.",
     }
 
 
 def analyze_profile_photo_image(
     image: Image.Image,
     filename: str | None = "profile.jpg",
-    format_detected: str = DEFAULT_IMAGE_FORMAT,
+    file_format: str = DEFAULT_FORMAT,
     meta: DecodedImage | None = None,
 ) -> dict[str, Any]:
-    """Run the complete analysis and return the API payload."""
+    """Run the complete analysis on a decoded image and return the response payload (see ``AnalysisResponse``)."""
     started = time.perf_counter()
     bgr = pil_to_bgr(image.convert("RGB"))
     height, width = bgr.shape[:2]
 
     info = check_image_information(bgr)
     if not info["has_information"]:
-        result = _handle_no_info(bgr, info, filename, format_detected, meta)
-        result["processing_time_ms"] = result["technical_diagnostics"]["processing_time_ms"] = round(
-            (time.perf_counter() - started) * 1000, 1
-        )
-        return result
+        response = _no_information_response(bgr, info, filename, file_format, meta)
+        response["diagnostics"]["processing_time_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        return response
 
     image_type = classify_image_type(bgr)
     census = census_faces(bgr)
+    humans, demographics_model = _build_human_faces(bgr, census.humans, census.persons)
+    others = _number_faces(census.others, width, height)
+    unsure = _number_faces(census.unsure, width, height)
+    status, reason = _decide(humans, others, unsure, image_type)
+    accepted = status == Status.PASSED
 
-    humans, demographics_model = _build_human_items(bgr, census.humans, census.persons)
-    others = _number_boxes(census.others, width, height)
-    unsure = _number_boxes(census.unsure, width, height)
-    accepted, status, reason = _decide(humans, others, unsure, image_type)
-
-    models = [MODEL_INFO_ANALYZER, *([image_type["model_executed"]] if image_type.get("model_executed") else [])]
-    models += census.models + ([demographics_model] if demographics_model else [])
-    demographics_done = demographics_model is not None
+    models = [MODEL_INFO_CHECK, *([image_type["model"]] if image_type["model"] else []), *census.models]
+    models += [demographics_model] if demographics_model else []
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
 
-    total = len(humans) + len(others)
-    regions = [h["box_xyxy"] for h in humans] + [o["box_xyxy"] for o in others] + [u["box_xyxy"] for u in unsure]
     return {
+        "status": status,
         "accepted": accepted,
-        "posting_status": status,
-        "posting_reason": reason,
         "reason": reason,
         "summary": _summary(humans, others, unsure),
-        "has_information": True,
-        "image_info_check": info,
-        "image_type_check": image_type,
-        "image_type_review_required": image_type["status"] in NON_PHOTO_STATUSES or bool(others) or bool(unsure),
-        "face_detected": bool(total or unsure),
-        "total_face_count": total,
         "real_human_face_count": len(humans),
         "other_face_count": len(others),
         "unsure_face_count": len(unsure),
         "human_faces": humans,
         "other_faces": others,
         "unsure_faces": unsure,
-        "pipeline_steps": _steps(
-            True, f"Valid visual content (Entropy: {info['entropy']:.2f})", census, demographics_done
+        "image_info": info,
+        "image_type": image_type,
+        "pipeline_steps": _pipeline_steps(
+            f"The image has visual content (entropy {info['entropy']:.2f}).",
+            True,
+            census,
+            demographics_model is not None,
         ),
-        "technical_diagnostics": _diagnostics(bgr, info, models, format_detected, meta, census.rejected, elapsed_ms),
-        "processing_time_ms": elapsed_ms,
-        **_legacy_fields(humans, accepted),
-        "face_regions_xyxy": regions,
+        "diagnostics": _diagnostics(bgr, models, file_format, meta, census.rejected, elapsed_ms),
         "original_image": bgr_to_base64_jpeg(bgr),
-        "annotated_image": bgr_to_base64_jpeg(_annotate(bgr, humans, others, unsure, accepted)),
+        "annotated_image": bgr_to_base64_jpeg(_annotate(bgr, humans, others, unsure)),
         "filename": filename,
-        "region_note": (
+        "legend": (
             "Green boxes are verified real human faces, purple boxes are non-human faces, "
             "orange boxes could not be verified."
-            if regions
-            else "No face region could be located. The original uploaded photo is shown for review."
+            if humans or others or unsure
+            else "No face was located in this image."
         ),
-        "note": "Age and gender are appearance-based estimates with a typical age error of several years. "
-        "Keep a separate age-verification workflow for any strict 18+ policy.",
+        "disclaimer": DISCLAIMER,
     }

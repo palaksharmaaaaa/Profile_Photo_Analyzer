@@ -28,11 +28,6 @@ licence, so **it is not cleared for commercial deployment**. To make it so, any 
 2. Obtain written clarification of the MiVOLO v2 training data from its authors.
 3. Have counsel review the dataset terms behind every model (WIDER FACE, UTKFace, IMDB-WIKI, LAION, FairFace).
 
-## Replaced components
-
-* **abhilash88 ViT age/gender** (UTKFace-trained, 345 MB fp32) - replaced by MiVOLO v2.
-* **InsightFace `genderage.onnx`**, **Ultralytics YOLOv8n**, **OpenAI CLIP ViT-B/32 via `transformers`** - replaced earlier.
-
 ## Privacy and fairness
 
 Estimating age and gender from a face is biometric-adjacent processing. Depending on jurisdiction (GDPR, BIPA, state

@@ -74,7 +74,7 @@ def main() -> None:
         "animal + person + anime detection": lambda: detect_entities_and_persons(bgr),
         "face verification (1 crop)": lambda: classify_boxes(bgr, [box]),
         "age + gender (MiVOLO, 3 views)": lambda: predict_face_demographics(bgr, box),
-        "END-TO-END": lambda: analyze_profile_photo_image(decoded.image, "bench", decoded.format_detected, decoded),
+        "END-TO-END": lambda: analyze_profile_photo_image(decoded.image, "bench", decoded.file_format, decoded),
     }
     results = {name: time_stage(fn, args.iterations) for name, fn in stages.items()}
 

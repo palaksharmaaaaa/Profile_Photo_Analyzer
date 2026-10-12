@@ -9,7 +9,8 @@ from app import app
 from app.core.config import Settings, settings
 from app.main import ProductionSecurityMiddleware
 from app.schemas.analysis import AnalysisResponse
-from tests.test_analyzer import HUMAN, PHOTO, adult, det
+from app.services.analyzer import analyze_profile_photo_image
+from tests.test_analyzer import HUMAN, PHOTO, adult, detected
 
 client = TestClient(app)
 
@@ -20,13 +21,14 @@ def jpeg_bytes(size=(64, 64), color="grey") -> bytes:
     return buf.getvalue()
 
 
-def canned_result() -> dict:
-    return {"accepted": True, "posting_status": "INITIAL_CHECKS_PASSED"}
+def valid_payload() -> dict:
+    """A complete, schema-valid response (the no-information path needs no model)."""
+    return analyze_profile_photo_image(Image.new("RGB", (64, 64), "white"))
 
 
 @pytest.fixture
 def stub_analysis():
-    with patch("app.api.routes.analyze_profile_photo_image", side_effect=lambda *a, **k: canned_result()) as stub:
+    with patch("app.api.routes.analyze_profile_photo_image", side_effect=lambda *a, **k: valid_payload()) as stub:
         yield stub
 
 
@@ -60,10 +62,10 @@ def test_health_reports_every_model_and_degrades_honestly():
 def test_successful_analysis_passes_decoded_metadata(stub_analysis):
     response = post()
     assert response.status_code == 200
-    assert response.json()["posting_status"] == "INITIAL_CHECKS_PASSED"
+    assert response.json()["status"] == "NO_INFORMATION"
     kwargs = stub_analysis.call_args.kwargs
     assert kwargs["filename"] == "p.jpg"
-    assert kwargs["format_detected"] == "image/jpeg"
+    assert kwargs["file_format"] == "image/jpeg"
     assert kwargs["meta"].original_width == 64
 
 
@@ -72,7 +74,7 @@ def test_real_pipeline_output_satisfies_public_schema(test_image_bytes):
     from app.services import analyzer as az
 
     with (
-        patch.object(az, "detect_faces", return_value=([det([200, 200, 400, 400])], ["Detector test"])),
+        patch.object(az, "detect_faces", return_value=([detected([200, 200, 400, 400])], ["Detector test"])),
         patch.object(az, "detect_entities_and_persons", return_value=([], [], [])),
         patch.object(az, "classify_boxes", side_effect=lambda img, boxes: [HUMAN] * len(boxes)),
         patch.object(az, "classify_image_type", return_value=PHOTO),
@@ -243,3 +245,19 @@ def test_python_dash_m_entrypoint():
     with patch("uvicorn.run") as run:
         runpy.run_module("app", run_name="__main__")
     run.assert_called_once()
+
+
+def test_page_assets_are_served_and_never_need_the_api_key():
+    with patch.object(settings, "API_KEY", "secret-test-token"):
+        assert client.get("/").status_code == 200
+        css, script = client.get("/static/analyzer.css"), client.get("/static/analyzer.js")
+    assert css.status_code == 200 and "text/css" in css.headers["content-type"]
+    assert script.status_code == 200 and "analyze-profile-photo" in script.text
+
+
+def test_openapi_documents_the_response_contract():
+    schema = client.get("/openapi.json").json()
+    post_operation = schema["paths"]["/analyze-profile-photo"]["post"]
+    ok = post_operation["responses"]["200"]["content"]["application/json"]["schema"]
+    assert ok["$ref"].endswith("/AnalysisResponse")
+    assert {"400", "413", "500"} <= set(post_operation["responses"])

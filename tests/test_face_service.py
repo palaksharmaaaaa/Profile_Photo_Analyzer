@@ -263,7 +263,7 @@ def test_confident_adult_male_estimate():
     assert demo.age_status == "Estimated" and demo.age_group == "30 to 33" and demo.estimated_age == 30.0
     low, high = demo.age_range
     assert low < 30 < high and high - low > 6  # a wide interval: the model error is several years
-    assert 0.05 < demo.age_confidence < 0.3
+    assert 0.05 < demo.age_group_probability < 0.3
     assert demo.p_under_18 < 0.05
     assert demo.gender == "Male" and demo.gender_confidence > 0.99
 
@@ -281,7 +281,7 @@ def test_minor_probability_rises_near_the_adult_boundary():
 def test_age_is_unsure_when_views_disagree_but_minor_probability_is_kept():
     demo = predict([head(10.0), head(30.0), head(12.0)])
     assert demo.age_status == fs.UNSURE and demo.age_group == fs.UNSURE
-    assert demo.estimated_age is None and demo.age_range is None and demo.age_confidence is None
+    assert demo.estimated_age is None and demo.age_range is None and demo.age_group_probability is None
     assert demo.p_under_18 is not None
     assert any("disagree" in note for note in demo.notes)
 

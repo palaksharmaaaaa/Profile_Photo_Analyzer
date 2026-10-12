@@ -13,6 +13,7 @@ import pytest
 from PIL import Image
 
 from app.schemas.analysis import AnalysisResponse
+from app.services import analyzer as az
 from app.services import semantic_service
 from app.services.analyzer import analyze_profile_photo_image
 from app.services.image_utils import decode_image_bytes
@@ -31,14 +32,14 @@ def noise_image(size=480, seed=1) -> Image.Image:
 
 def test_blank_image_is_reported_without_running_any_model():
     result = analyze_profile_photo_image(Image.new("RGB", (400, 400), (30, 90, 160)))
-    assert result["posting_status"] == "NO_INFORMATION"
-    assert result["technical_diagnostics"]["models_executed"] == ["Image Information & Entropy Analyzer"]
+    assert result["status"] == "NO_INFORMATION"
+    assert result["diagnostics"]["models_executed"] == [az.MODEL_INFO_CHECK]
 
 
 def test_pure_noise_has_information_but_no_faces():
     result = analyze_profile_photo_image(noise_image())
     AnalysisResponse.model_validate(result)
-    assert result["has_information"] is True
+    assert result["image_info"]["has_information"] is True
     assert result["real_human_face_count"] == 0
     assert result["accepted"] is False
     assert result["human_faces"] == []
@@ -85,7 +86,7 @@ def test_user_images_produce_well_formed_honest_results():
     assert files, "no images found"
     for path in files:
         decoded = decode_image_bytes(path.read_bytes())
-        result = analyze_profile_photo_image(decoded.image, path.name, decoded.format_detected, decoded)
+        result = analyze_profile_photo_image(decoded.image, path.name, decoded.file_format, decoded)
         AnalysisResponse.model_validate(result)
         for face in result["human_faces"]:
             assert face["age_status"] in ("Estimated", "Unsure", "Not Detected")

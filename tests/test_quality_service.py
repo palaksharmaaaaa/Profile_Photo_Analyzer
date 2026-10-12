@@ -67,21 +67,21 @@ def test_yaw_ratio_unavailable(points):
 def test_quality_complete_for_good_frontal_face():
     result = assess_face_quality(textured(), [200, 200, 400, 400], FRONTAL)
     assert result["status"] == "LIKELY_COMPLETE"
-    assert result["demographics_usable"] is True
+    assert result["usable_for_demographics"] is True
     assert result["demographics_caveat"] is None
-    assert result["face_min_side_px"] == 200
+    assert result["min_side_px"] == 200
 
 
 def test_quality_invalid_box():
     result = assess_face_quality(textured(), [100, 100, 100, 100], FRONTAL)
     assert result["status"] == "UNCERTAIN"
-    assert result["demographics_usable"] is False
+    assert result["usable_for_demographics"] is False
 
 
 def test_quality_flags_edge_touching_face():
     result = assess_face_quality(textured(), [0, 100, 150, 300], FRONTAL)
     assert result["status"] == "PARTIAL_OR_CROPPED"
-    assert result["face_box_touches_image_edge"] is True
+    assert result["touches_image_edge"] is True
 
 
 def test_quality_flags_dark_and_bright_faces():
@@ -97,7 +97,7 @@ def test_quality_flags_dark_and_bright_faces():
 def test_quality_flags_tiny_and_huge_faces():
     tiny = assess_face_quality(textured(1200), [500, 500, 530, 530], FRONTAL)
     assert "too small" in tiny["reason"]
-    assert tiny["demographics_usable"] is False
+    assert tiny["usable_for_demographics"] is False
     assert "only 30px" in tiny["demographics_caveat"]
 
     huge = assess_face_quality(textured(600), [20, 20, 590, 590], FRONTAL)
@@ -133,7 +133,7 @@ def test_quality_flags_head_turn():
     turned[2, 0] = 365
     result = assess_face_quality(textured(), [200, 200, 400, 400], turned)
     assert "turned" in result["reason"]
-    assert result["demographics_usable"] is False
+    assert result["usable_for_demographics"] is False
     assert "turned too far" in result["demographics_caveat"]
 
 
@@ -142,4 +142,4 @@ def test_quality_moderate_turn_is_flagged_but_still_usable_for_demographics():
     slight[2, 0] = 345  # yaw ratio 0.45: not frontal, but within what the age model tolerates
     result = assess_face_quality(textured(), [200, 200, 400, 400], slight)
     assert result["status"] == "UNCERTAIN"
-    assert result["demographics_usable"] is True
+    assert result["usable_for_demographics"] is True

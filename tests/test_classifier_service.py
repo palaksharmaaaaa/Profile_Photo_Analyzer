@@ -9,14 +9,14 @@ from app.services.semantic_service import SemanticResult
 from tests.conftest import FakeSession
 
 
-def sem(name, probs, face_type=None):
+def sem(name, probs, kind=None):
     """Build a SemanticResult from a {class: probability} dict."""
     ordered = sorted(probs.items(), key=lambda kv: -kv[1])
     top, runner = ordered[0], ordered[1][1] if len(ordered) > 1 else 0.0
     return SemanticResult(
         name=name,
         display=name.replace("_", " ").title(),
-        face_type=face_type
+        kind=kind
         or {"real_human": "human", "animal": "animal", "bird": "bird", "not_face": "not_a_face"}.get(name, name),
         probability=top[1],
         margin=round(top[1] - runner, 4),
@@ -50,9 +50,9 @@ def run_image_type(probs):
 def test_image_type_photo():
     out = run_image_type(image_probs(real_photo=0.9, cartoon=0.1))
     assert out["status"] == "PHOTO_LIKE"
-    assert out["display_label"] == "Real Photo"
-    assert out["photo_score"] == pytest.approx(0.9)
-    assert out["model_executed"] == cs.MODEL_NAME_SIGLIP
+    assert out["label"] == "Real Photo"
+    assert out["photo_share"] == pytest.approx(0.9)
+    assert out["model"] == cs.MODEL_NAME_SIGLIP
 
 
 def test_image_type_synthetic_uses_label_from_winning_group():
@@ -61,15 +61,15 @@ def test_image_type_synthetic_uses_label_from_winning_group():
 
     out = run_image_type(image_probs(real_photo=0.31, painting=0.4, cartoon=0.2, anime=0.09))
     assert out["status"] == "NON_PHOTO"
-    assert out["display_label"] == "Painting / Sketch"  # not "Real Photo", which is the top single class
+    assert out["label"] == "Painting / Sketch"  # not "Real Photo", which is the top single class
 
 
 def test_image_type_unavailable_is_reported_as_uncertain_not_invented():
     with patch.object(cs.semantic_service, "classify_images", return_value=None):
         out = cs.classify_image_type(IMG)
     assert out["status"] == "UNCERTAIN"
-    assert out["model_executed"] is None
-    assert out["photo_score"] is None and out["top_class_confidence"] is None
+    assert out["model"] is None and out["predictions"] == []
+    assert out["photo_share"] is None and out["synthetic_share"] is None
 
 
 # ---- crop verdicts ------------------------------------------------------------------------------
