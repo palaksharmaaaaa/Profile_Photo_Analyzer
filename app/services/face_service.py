@@ -67,6 +67,24 @@ def age_to_three_year_group(age: float) -> str:
     return f"{lower} to {upper}"
 
 
+def sort_faces_reading_order(faces: List[Any], row_threshold_px: int = 50) -> List[Any]:
+    """
+    Sort detected faces in natural reading order: top-to-bottom, left-to-right.
+    Groups faces into vertical rows using row_threshold_px, then sorts horizontally.
+    """
+    if not faces:
+        return []
+
+    def sort_key(face: Any) -> Tuple[int, int]:
+        bbox = face.bbox if hasattr(face, "bbox") else face.get("bbox", [0, 0, 0, 0])
+        y1 = int(bbox[1])
+        x1 = int(bbox[0])
+        row_idx = round(y1 / max(1, row_threshold_px))
+        return (row_idx, x1)
+
+    return sorted(faces, key=sort_key)
+
+
 def age_to_group(age: float) -> str:
     """Standard demographic age group (alias for 3-year brackets)."""
     return age_to_three_year_group(age)

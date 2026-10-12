@@ -68,6 +68,18 @@ def test_analyze_endpoint_corrupted_image():
     assert response.status_code == 400
     data = response.json()
     assert data["accepted"] is False
+    assert "invalid or unsupported binary format" in data["reason"].lower()
+
+
+def test_analyze_endpoint_corrupt_data_valid_header():
+    corrupted_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 40
+    response = client.post(
+        "/analyze-profile-photo",
+        files={"file": ("corrupt.jpg", corrupted_jpeg, "image/jpeg")}
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert data["accepted"] is False
     assert "not a valid supported image" in data["reason"].lower()
 
 

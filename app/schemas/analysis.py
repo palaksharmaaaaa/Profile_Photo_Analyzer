@@ -47,11 +47,13 @@ class OtherFaceItem(BaseModel):
     label: str
     confidence: float
     box_xyxy: List[int]
+    box_normalized: List[float] = Field(default_factory=list)  # [ymin%, xmin%, ymax%, xmax%]
 
 
 class HumanFaceItem(BaseModel):
     face_id: int
     box_xyxy: List[int]
+    box_normalized: List[float] = Field(default_factory=list)  # [ymin%, xmin%, ymax%, xmax%]
     detection_confidence: float
     gender: str = NOT_DETECTED
     gender_confidence: Optional[float] = None
@@ -61,6 +63,25 @@ class HumanFaceItem(BaseModel):
     possible_minor_risk: bool = False
     face_visibility: Optional[FaceVisibilityResult] = None
     is_primary: bool = False
+
+
+class PipelineStepItem(BaseModel):
+    step_id: str
+    step_number: int
+    title: str
+    status: str  # completed, failed, skipped
+    detail: str
+
+
+class TechnicalDiagnostics(BaseModel):
+    processing_time_ms: float = 0.0
+    image_width: int = 0
+    image_height: int = 0
+    file_format_detected: str = "unknown"
+    entropy_score: float = 0.0
+    std_dev_score: float = 0.0
+    laplacian_var: float = 0.0
+    models_executed: List[str] = Field(default_factory=list)
 
 
 class AnalysisResponse(BaseModel):
@@ -78,6 +99,9 @@ class AnalysisResponse(BaseModel):
     other_face_count: int = 0
     human_faces: List[HumanFaceItem] = Field(default_factory=list)
     other_faces: List[OtherFaceItem] = Field(default_factory=list)
+    pipeline_steps: List[PipelineStepItem] = Field(default_factory=list)
+    technical_diagnostics: Optional[TechnicalDiagnostics] = None
+    processing_time_ms: float = 0.0
 
     # Primary / Legacy fields for single-face callers
     face_count: int = 0

@@ -247,3 +247,29 @@ def test_predict_face_demographics_onnx_exception():
     with patch("app.services.face_service.get_genderage_session", return_value=mock_session):
         age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
         assert age_grp == "Not Detected"
+
+
+def test_sort_faces_reading_order():
+    from app.services.face_service import sort_faces_reading_order, DetectedFace
+
+    assert sort_faces_reading_order([]) == []
+
+    # Three faces:
+    # Face A: at y=200, x=50 (second row)
+    # Face B: at y=30, x=150 (first row, right)
+    # Face C: at y=25, x=40  (first row, left)
+    face_a = DetectedFace(bbox=[50, 200, 90, 240])
+    face_b = DetectedFace(bbox=[150, 30, 190, 70])
+    face_c = DetectedFace(bbox=[40, 25, 80, 65])
+
+    sorted_faces = sort_faces_reading_order([face_a, face_b, face_c], row_threshold_px=50)
+    # In reading order: row 1 left (C), row 1 right (B), then row 2 (A)
+    assert sorted_faces == [face_c, face_b, face_a]
+
+    # Test with dict-like face objects
+    dict_faces = [
+        {"bbox": [100, 120, 150, 170]},
+        {"bbox": [20, 20, 60, 60]}
+    ]
+    sorted_dicts = sort_faces_reading_order(dict_faces, row_threshold_px=50)
+    assert sorted_dicts[0]["bbox"] == [20, 20, 60, 60]

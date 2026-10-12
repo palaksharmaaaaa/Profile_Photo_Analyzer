@@ -1,5 +1,6 @@
 import io
 import logging
+import time
 from pathlib import Path
 from typing import Annotated
 from fastapi import APIRouter, File, UploadFile, status
@@ -8,6 +9,7 @@ from PIL import Image
 
 from app.core.config import settings
 from app.services.analyzer import analyze_profile_photo_image
+from app.services.image_utils import sniff_image_magic_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +73,26 @@ def analyze_profile_photo(file: Annotated[UploadFile, File()]):
             }
         )
 
+    start_time = time.perf_counter()
+
+    try:
+        format_detected = sniff_image_magic_bytes(contents)
+    except ValueError as exc:
+        logger.warning("Magic bytes validation failed: %s", exc)
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "accepted": False,
+                "reason": str(exc)
+            }
+        )
+
     try:
         image = Image.open(io.BytesIO(contents))
         image.load()
         image = image.convert("RGB")
     except (OSError, ValueError) as exc:
-        logger.warning(f"Failed to decode image: {exc}")
+        logger.warning("Failed to decode image: %s", exc)
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
@@ -86,10 +102,14 @@ def analyze_profile_photo(file: Annotated[UploadFile, File()]):
         )
 
     try:
-        result = analyze_profile_photo_image(image, filename=filename)
+        result = analyze_profile_photo_image(image, filename=filename, format_detected=format_detected)
+        elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+        result["processing_time_ms"] = elapsed_ms
+        if "technical_diagnostics" in result and result["technical_diagnostics"] is not None:
+            result["technical_diagnostics"]["processing_time_ms"] = elapsed_ms
         return JSONResponse(content=result)
     except Exception:
-        logger.exception(f"Analysis error processing {filename}")
+        logger.exception("Analysis error processing uploaded image")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={

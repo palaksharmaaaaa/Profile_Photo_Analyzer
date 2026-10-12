@@ -6,8 +6,36 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 
 
+def sniff_image_magic_bytes(contents: bytes) -> str:
+    """
+    Verify authentic binary magic bytes against recognized image standards.
+    Supports JPEG, PNG, WebP, and BMP.
+    """
+    if not contents or len(contents) < 4:
+        raise ValueError("File payload is empty or too short to identify.")
+
+    # JPEG: starts with FF D8 FF
+    if contents.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+
+    # PNG: starts with 89 50 4E 47 0D 0A 1A 0A
+    if contents.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+
+    # WebP: starts with RIFF, bytes 8..12 are WEBP
+    if len(contents) >= 12 and contents.startswith(b"RIFF") and contents[8:12] == b"WEBP":
+        return "image/webp"
+
+    # BMP: starts with BM
+    if contents.startswith(b"BM"):
+        return "image/bmp"
+
+    raise ValueError("Invalid or unsupported binary format. Only authentic JPEG, PNG, WebP, and BMP images are supported.")
+
+
 def decode_image_bytes(contents: bytes) -> Image.Image:
-    """Decode raw bytes into a PIL RGB image."""
+    """Decode raw bytes into a PIL RGB image after validating magic headers."""
+    sniff_image_magic_bytes(contents)
     try:
         image = Image.open(io.BytesIO(contents))
         image.load()
@@ -43,6 +71,22 @@ def clamp_box(box: List[int], width: int, height: int) -> Tuple[int, int, int, i
     x2 = max(0, min(x2, width))
     y2 = max(0, min(y2, height))
     return x1, y1, x2, y2
+
+
+def compute_normalized_box(box: List[int], width: int, height: int) -> List[float]:
+    """
+    Compute relative bounding box percentages [ymin%, xmin%, ymax%, xmax%]
+    for responsive CSS overlay positioning and thumbnail avatar cropping.
+    """
+    if width <= 0 or height <= 0:
+        return [0.0, 0.0, 0.0, 0.0]
+
+    x1, y1, x2, y2 = clamp_box(box, width, height)
+    ymin_pct = round(max(0.0, min(100.0, (y1 / height) * 100.0)), 2)
+    xmin_pct = round(max(0.0, min(100.0, (x1 / width) * 100.0)), 2)
+    ymax_pct = round(max(0.0, min(100.0, (y2 / height) * 100.0)), 2)
+    xmax_pct = round(max(0.0, min(100.0, (x2 / width) * 100.0)), 2)
+    return [ymin_pct, xmin_pct, ymax_pct, xmax_pct]
 
 
 def annotate_faces(

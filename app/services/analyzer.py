@@ -8,6 +8,7 @@ from app.services.image_utils import (
     pil_to_bgr,
     bgr_to_base64_jpeg,
     clamp_box,
+    compute_normalized_box,
     annotate_faces,
 )
 from app.services.quality_service import (
@@ -23,6 +24,7 @@ from app.services.face_service import (
     detect_faces,
     predict_face_demographics,
     possible_minor_age_group,
+    sort_faces_reading_order,
     NOT_AVAILABLE,
     NOT_DETECTED,
 )
@@ -37,16 +39,107 @@ MULTIPLE_FACES_REASON = "A profile photo must contain exactly one detected face.
 MULTIPLE_FACES_NOTE = "Multiple faces detected."
 NO_INFO_REASON = "This image has no information to check or process (blank or solid color)."
 NO_FACE_DETECTED = "No face detected."
+DEFAULT_IMAGE_FORMAT = "image/jpeg"
+
+
+def _determine_step3_status(info_ok: bool, human_count: int) -> str:
+    """Helper to determine step 3 status without nested conditionals."""
+    if not info_ok:
+        return "skipped"
+    if human_count == 1:
+        return "completed"
+    return "failed"
+
+
+def _build_pipeline_steps(
+    info_ok: bool,
+    info_detail: str,
+    human_count: int,
+    other_count: int,
+    demographics_done: bool,
+    demographics_detail: str
+) -> List[Dict[str, Any]]:
+    """Construct structured status items for the 4-stage pipeline stepper."""
+    step3_status = _determine_step3_status(info_ok, human_count)
+    step4_status = "completed" if demographics_done else "skipped"
+
+    return [
+        {
+            "step_id": "validate",
+            "step_number": 1,
+            "title": "File & Binary Validation",
+            "status": "completed",
+            "detail": "Authentic binary image validated & decodable within 10 MB limit."
+        },
+        {
+            "step_id": "information",
+            "step_number": 2,
+            "title": "Visual Information Check",
+            "status": "completed" if info_ok else "failed",
+            "detail": info_detail
+        },
+        {
+            "step_id": "detection",
+            "step_number": 3,
+            "title": "Face Detection & Discrimination",
+            "status": step3_status,
+            "detail": f"{human_count} human face(s), {other_count} other face(s) detected." if info_ok else "Skipped due to lack of visual information."
+        },
+        {
+            "step_id": "demographics",
+            "step_number": 4,
+            "title": "Demographics & 3-Year Age Buckets",
+            "status": step4_status,
+            "detail": demographics_detail if demographics_done else "Skipped (requires exactly 1 real human face)."
+        }
+    ]
+
+
+def _build_technical_diagnostics(
+    width: int,
+    height: int,
+    format_detected: str,
+    info_check: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Generate technical metadata and computer vision model diagnostics."""
+    return {
+        "processing_time_ms": 0.0,
+        "image_width": width,
+        "image_height": height,
+        "file_format_detected": format_detected or DEFAULT_IMAGE_FORMAT,
+        "entropy_score": round(float(info_check.get("entropy", 0.0)), 2),
+        "std_dev_score": round(float(info_check.get("std_dev", 0.0)), 2),
+        "laplacian_var": round(float(info_check.get("laplacian_var", 0.0)), 2),
+        "models_executed": [
+            "YuNet Face Detector (2023mar)",
+            "InsightFace GenderAge (multitask CNN)",
+            "DeepGHS Anime Face Detector (v1.4n)",
+            "Ultralytics YOLOv8n (COCO)"
+        ]
+    }
 
 
 def _handle_no_info(
     image_bgr: np.ndarray,
     info_check: Dict[str, Any],
     image_type: Dict[str, Any],
-    filename: Optional[str]
+    filename: Optional[str],
+    format_detected: str = DEFAULT_IMAGE_FORMAT
 ) -> Dict[str, Any]:
     """Generate response when image contains no visual information."""
+    height, width = image_bgr.shape[:2]
     img_b64 = bgr_to_base64_jpeg(image_bgr)
+    entropy_val = info_check.get("entropy", 0.0)
+    steps = _build_pipeline_steps(
+        info_ok=False,
+        info_detail=f"Blank or solid color (Entropy: {entropy_val:.2f})",
+        human_count=0,
+        other_count=0,
+        demographics_done=False,
+        demographics_detail=""
+    )
+    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check)
+
     return {
         "accepted": False,
         "posting_status": "NO_INFORMATION",
@@ -62,6 +155,9 @@ def _handle_no_info(
         "other_face_count": 0,
         "human_faces": [],
         "other_faces": [],
+        "pipeline_steps": steps,
+        "technical_diagnostics": diagnostics,
+        "processing_time_ms": 0.0,
         "face_count": 0,
         "face_visibility": None,
         "estimated_age_group": NOT_DETECTED,
@@ -92,9 +188,11 @@ def _handle_no_human_faces(
     other_faces: List[Dict[str, Any]],
     type_warning: str,
     non_photo: bool,
-    filename: Optional[str]
+    filename: Optional[str],
+    format_detected: str = DEFAULT_IMAGE_FORMAT
 ) -> Dict[str, Any]:
     """Generate rejection payload when zero real human faces are detected."""
+    height, width = image_bgr.shape[:2]
     other_count = len(other_faces)
     if other_count > 0:
         posting_status = "NON_PHOTO_WARNING"
@@ -112,6 +210,16 @@ def _handle_no_human_faces(
     img_b64 = bgr_to_base64_jpeg(image_bgr)
     annot_b64 = bgr_to_base64_jpeg(annotated)
 
+    steps = _build_pipeline_steps(
+        info_ok=True,
+        info_detail=f"Valid visual content (Entropy: {info_check.get('entropy', 0.0):.2f})",
+        human_count=0,
+        other_count=other_count,
+        demographics_done=False,
+        demographics_detail=""
+    )
+    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check)
+
     return {
         "accepted": False,
         "posting_status": posting_status,
@@ -127,6 +235,9 @@ def _handle_no_human_faces(
         "other_face_count": other_count,
         "human_faces": [],
         "other_faces": other_faces,
+        "pipeline_steps": steps,
+        "technical_diagnostics": diagnostics,
+        "processing_time_ms": 0.0,
         "face_count": 0,
         "face_visibility": None,
         "estimated_age_group": NOT_AVAILABLE,
@@ -158,9 +269,11 @@ def _handle_multiple_human_faces(
     other_faces: List[Dict[str, Any]],
     type_warning: str,
     non_photo: bool,
-    filename: Optional[str]
+    filename: Optional[str],
+    format_detected: str = DEFAULT_IMAGE_FORMAT
 ) -> Dict[str, Any]:
     """Generate rejection payload when multiple real human faces are detected."""
+    height, width = image_bgr.shape[:2]
     human_count = len(human_faces)
     total_count = human_count + len(other_faces)
     posting_status = "NON_PHOTO_WARNING" if non_photo else "REJECTED"
@@ -168,6 +281,16 @@ def _handle_multiple_human_faces(
 
     boxes = [f["box_xyxy"] for f in human_faces]
     annotated = annotate_faces(image_bgr, boxes, "MULTIPLE FACES", COLOR_ORANGE)
+
+    steps = _build_pipeline_steps(
+        info_ok=True,
+        info_detail=f"Valid visual content (Entropy: {info_check.get('entropy', 0.0):.2f})",
+        human_count=human_count,
+        other_count=len(other_faces),
+        demographics_done=False,
+        demographics_detail=""
+    )
+    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check)
 
     return {
         "accepted": False,
@@ -184,6 +307,9 @@ def _handle_multiple_human_faces(
         "other_face_count": len(other_faces),
         "human_faces": human_faces,
         "other_faces": other_faces,
+        "pipeline_steps": steps,
+        "technical_diagnostics": diagnostics,
+        "processing_time_ms": 0.0,
         "face_count": human_count,
         "face_visibility": None,
         "estimated_age_group": NOT_AVAILABLE,
@@ -217,7 +343,6 @@ def _separate_faces(
     """Separate candidate faces into real human candidates and non-human entities."""
     real_human_raw: List[Tuple[Any, List[int]]] = []
     other_faces_list: List[Dict[str, Any]] = []
-    other_face_counter = 1
 
     for face in raw_faces:
         raw_box = [int(v) for v in getattr(face, "bbox", [0, 0, width, height])]
@@ -225,9 +350,9 @@ def _separate_faces(
 
         non_human_match = check_is_non_human_face(box, image_bgr, non_human_entities)
         if non_human_match is not None:
-            non_human_match["face_id"] = other_face_counter
-            other_face_counter += 1
-            other_faces_list.append(non_human_match)
+            match_copy = dict(non_human_match)
+            match_copy["box_normalized"] = compute_normalized_box(box, width, height)
+            other_faces_list.append(match_copy)
         else:
             real_human_raw.append((face, box))
 
@@ -235,9 +360,22 @@ def _separate_faces(
         ent_box = ent["box_xyxy"]
         if not any(f["box_xyxy"] == ent_box for f in other_faces_list):
             ent_copy = dict(ent)
-            ent_copy["face_id"] = other_face_counter
-            other_face_counter += 1
+            ent_copy["box_normalized"] = compute_normalized_box(ent_box, width, height)
             other_faces_list.append(ent_copy)
+
+    # Sort real human faces in reading order (top-to-bottom, left-to-right)
+    real_human_raw = sorted(
+        real_human_raw,
+        key=lambda item: (round(item[1][1] / 50), item[1][0])
+    )
+
+    # Sort other entities in reading order
+    other_faces_list = sorted(
+        other_faces_list,
+        key=lambda item: (round(item["box_xyxy"][1] / 50), item["box_xyxy"][0])
+    )
+    for idx, f in enumerate(other_faces_list, start=1):
+        f["face_id"] = idx
 
     return real_human_raw, other_faces_list
 
@@ -248,6 +386,7 @@ def _build_human_face_items(
     non_photo: bool
 ) -> List[Dict[str, Any]]:
     """Build detailed analysis items for all detected real human faces."""
+    height, width = image_bgr.shape[:2]
     items: List[Dict[str, Any]] = []
     for face_idx, (face_obj, box) in enumerate(real_human_raw, start=1):
         landmarks = getattr(face_obj, "kps", None)
@@ -272,6 +411,7 @@ def _build_human_face_items(
         items.append({
             "face_id": face_idx,
             "box_xyxy": box,
+            "box_normalized": compute_normalized_box(box, width, height),
             "detection_confidence": det_score,
             "gender": gender_str,
             "gender_confidence": gender_conf,
@@ -371,7 +511,8 @@ def _render_annotation(
 
 def analyze_profile_photo_image(
     image: Image.Image,
-    filename: Optional[str] = "profile.jpg"
+    filename: Optional[str] = "profile.jpg",
+    format_detected: str = DEFAULT_IMAGE_FORMAT
 ) -> Dict[str, Any]:
     """
     Complete end-to-end profile photo analysis pipeline:
@@ -390,7 +531,7 @@ def analyze_profile_photo_image(
     image_type = classify_image_type(image)
 
     if not info_check["has_information"]:
-        return _handle_no_info(image_bgr, info_check, image_type, filename)
+        return _handle_no_info(image_bgr, info_check, image_type, filename, format_detected)
 
     non_photo = image_type.get("status") == "NON_PHOTO"
     type_warning = (
@@ -406,14 +547,14 @@ def analyze_profile_photo_image(
     real_human_count = len(real_human_raw)
     if real_human_count == 0:
         return _handle_no_human_faces(
-            image_bgr, info_check, image_type, other_faces_list, type_warning, non_photo, filename
+            image_bgr, info_check, image_type, other_faces_list, type_warning, non_photo, filename, format_detected
         )
 
     # 3. Demographics for all real human faces
     human_faces_list = _build_human_face_items(real_human_raw, image_bgr, non_photo)
     if real_human_count > 1:
         return _handle_multiple_human_faces(
-            image_bgr, info_check, image_type, human_faces_list, other_faces_list, type_warning, non_photo, filename
+            image_bgr, info_check, image_type, human_faces_list, other_faces_list, type_warning, non_photo, filename, format_detected
         )
 
     # 4. Single real human face evaluation
@@ -438,6 +579,16 @@ def analyze_profile_photo_image(
         image_bgr, face_box, other_faces_list, accepted, minor_risk, posting_status, age_label
     )
 
+    steps = _build_pipeline_steps(
+        info_ok=True,
+        info_detail=f"Valid visual content (Entropy: {info_check.get('entropy', 0.0):.2f})",
+        human_count=1,
+        other_count=other_count,
+        demographics_done=True,
+        demographics_detail=f"Estimated age group: {age_label}, Gender: {gender_pred}."
+    )
+    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check)
+
     return {
         "accepted": accepted,
         "posting_status": posting_status,
@@ -453,6 +604,9 @@ def analyze_profile_photo_image(
         "other_face_count": other_count,
         "human_faces": human_faces_list,
         "other_faces": other_faces_list,
+        "pipeline_steps": steps,
+        "technical_diagnostics": diagnostics,
+        "processing_time_ms": 0.0,
         "face_count": 1,
         "face_visibility": visibility,
         "estimated_age_group": age_label,
