@@ -19,6 +19,7 @@ LABEL_3D = "a computer-generated 3D character"
 LABEL_OBJECT = "a photograph or picture of an object with no person"
 LABEL_DIAGRAM = "a biological or scientific diagram"
 LABEL_UNCERTAIN = "uncertain or unverified image type"
+MODEL_NAME_HEURISTIC_SCREENER = "Heuristic CV Screener"
 
 IMAGE_LABELS = [
     LABEL_REAL_PHOTO,
@@ -356,7 +357,7 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
                 "photo_score": 0.05,
                 "cartoon_score": 0.90,
                 "display_label": "Biological / Scientific Diagram",
-                "model_executed": "Heuristic CV Screener",
+                "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
                 "all_predictions": [
                     {"label": LABEL_DIAGRAM, "confidence": 0.90},
                     {"label": LABEL_REAL_PHOTO, "confidence": 0.05},
@@ -374,7 +375,7 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
                 "photo_score": 0.10,
                 "cartoon_score": 0.85,
                 "display_label": "Cartoon / Illustrated Image",
-                "model_executed": "Heuristic CV Screener",
+                "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
                 "all_predictions": [
                     {"label": LABEL_CARTOON, "confidence": 0.85},
                     {"label": LABEL_REAL_PHOTO, "confidence": 0.10},
@@ -391,7 +392,7 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
             "photo_score": 0.50,
             "cartoon_score": 0.50,
             "display_label": "Heuristic Screening (Review Required)",
-            "model_executed": "Heuristic CV Screener",
+            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
             "all_predictions": [
                 {"label": LABEL_UNCERTAIN, "confidence": 0.50},
                 {"label": LABEL_REAL_PHOTO, "confidence": 0.50},
@@ -472,7 +473,7 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
             "photo_score": 0.0,
             "cartoon_score": 0.0,
             "display_label": "Uncertain",
-            "model_executed": "Heuristic CV Screener",
+            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
             "all_predictions": [],
             "scores": {},
             "reason": "Image classification failed due to an internal error.",
