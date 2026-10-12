@@ -32,7 +32,7 @@ COLUMNS = [
 
 
 def _init_worker(threads: int) -> None:
-    os.environ["PPA_ORT_INTRA_OP_THREADS"] = str(threads)
+    os.environ["PPA_MODELS__ORT_THREADS"] = str(threads)
 
 
 def analyze_one(path: str) -> dict:

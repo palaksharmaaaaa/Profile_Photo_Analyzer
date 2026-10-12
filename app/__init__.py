@@ -3,5 +3,5 @@
 from app.core.config import settings
 from app.main import app, create_app
 
-__version__ = settings.APP_VERSION
+__version__ = settings.app_version
 __all__ = ["__version__", "app", "create_app"]

@@ -259,4 +259,4 @@ def test_detect_entities_empty_image():
 
 
 def test_thresholds_come_from_settings():
-    assert settings.HUMAN_MIN_PROB > settings.NONHUMAN_MAX_HUMAN_PROB
+    assert settings.verification.human_min_prob > settings.verification.nonhuman_max_human_prob

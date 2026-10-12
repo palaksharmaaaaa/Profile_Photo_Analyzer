@@ -17,3 +17,14 @@ filterwarnings = [
     "ignore:.*found in sys.modules after import of package.*:RuntimeWarning",
 ]
 
+
+[tool.mypy]
+python_version = "3.14"
+files = ["app"]
+plugins = ["pydantic.mypy"]
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["onnxruntime", "onnxruntime.*"]
+ignore_missing_imports = true  # onnxruntime ships no type information

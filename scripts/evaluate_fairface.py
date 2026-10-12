@@ -68,10 +68,10 @@ def evaluate(csv_path: Path, root: Path, limit: int | None) -> dict:
                 s["age_abs_err"] += abs(demo.estimated_age - (low + high) / 2)
             if high < 18:
                 s["minors"] += 1
-                s["minors_flagged"] += (demo.p_under_18 or 0.0) >= settings.MINOR_RISK_PROBABILITY
+                s["minors_flagged"] += (demo.p_under_18 or 0.0) >= settings.age.minor_risk_probability
             elif low >= 30:
                 s["adults30"] += 1
-                s["adults30_flagged"] += (demo.p_under_18 or 0.0) >= settings.MINOR_RISK_PROBABILITY
+                s["adults30_flagged"] += (demo.p_under_18 or 0.0) >= settings.age.minor_risk_probability
 
     def ratio(a: float, b: float) -> float | None:
         return round(a / b, 4) if b else None

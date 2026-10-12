@@ -2,15 +2,19 @@
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 
 import cv2
 import numpy as np
+import onnxruntime as ort
 
 from app.core.config import settings
 from app.schemas.analysis import NOT_DETECTED, UNSURE
 from app.services.image_utils import box_iou, clamp_box, letterbox_top_left
 from app.services.model_manager import MODEL_SPECS, get_session, get_yunet_detector, yunet_lock
+from app.services.parallel import run_all
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +98,8 @@ def _decode_scrfd(outputs: list[np.ndarray], size: int, threshold: float) -> lis
         distances = outputs[level + 3] * stride
         landmarks = outputs[level + 6] * stride
         cells = size // stride
-        centers = np.stack(np.mgrid[:cells, :cells][::-1], axis=-1).astype(np.float32).reshape(-1, 2) * stride
+        xs, ys = np.meshgrid(np.arange(cells), np.arange(cells))
+        centers = np.stack([xs, ys], axis=-1).astype(np.float32).reshape(-1, 2) * stride
         centers = np.stack([centers] * 2, axis=1).reshape(-1, 2)  # two anchors per cell
         if centers.shape[0] != scores.shape[0]:
             raise ValueError("Unexpected SCRFD output size")
@@ -119,7 +124,7 @@ def _scrfd_pass(image_bgr: np.ndarray) -> list[DetectedFace]:
     outputs = session.run(None, {session.get_inputs()[0].name: blob})
 
     faces: list[DetectedFace] = []
-    for box, score, kps in _decode_scrfd(outputs, size, settings.SCRFD_THRESHOLD):
+    for box, score, kps in _decode_scrfd(outputs, size, settings.detection.scrfd_threshold):
         x1, y1, x2, y2 = (float(v) / ratio for v in box)
         clamped = list(clamp_box([round(x1), round(y1), round(x2), round(y2)], width, height))
         visible = (clamped[2] - clamped[0]) * (clamped[3] - clamped[1])
@@ -143,7 +148,7 @@ def _yunet_pass(image_bgr: np.ndarray, scale: float) -> list[DetectedFace]:
         detector = get_yunet_detector(width=work_w, height=work_h)
         if detector is None:
             raise RuntimeError("YuNet detector unavailable")
-        _, rows = detector.detect(work)
+        rows: np.ndarray | None = detector.detect(work)[1]
 
     faces: list[DetectedFace] = []
     if rows is None:
@@ -161,7 +166,7 @@ def _yunet_pass(image_bgr: np.ndarray, scale: float) -> list[DetectedFace]:
 
 def _yunet_passes(image_bgr: np.ndarray) -> list[DetectedFace]:
     scales = [1.0]
-    if max(image_bgr.shape[:2]) < settings.SMALL_IMAGE_UPSCALE_SIDE:
+    if max(image_bgr.shape[:2]) < settings.detection.small_image_upscale_side:
         scales.append(2.0)  # an extra 2x pass finds small faces in small images
     return [face for scale in scales for face in _yunet_pass(image_bgr, scale)]
 
@@ -181,24 +186,39 @@ def _merge_faces(faces: list[DetectedFace]) -> list[DetectedFace]:
     return kept
 
 
+def _run_detector(
+    name: str, run: Callable[[np.ndarray], list[DetectedFace]], image_bgr: np.ndarray
+) -> list[DetectedFace] | None:
+    """One detector's candidates, or None (logged) when it cannot run."""
+    try:
+        return run(image_bgr)
+    except Exception as exc:
+        logger.warning("%s unavailable: %s", name, exc)
+        return None
+
+
 def detect_faces(image_bgr: np.ndarray) -> tuple[list[DetectedFace], list[str]]:
     """
     Detect face candidates with SCRFD-10G and YuNet and merge them (the union raises recall; the verifier
-    later rejects non-faces).
+    later rejects non-faces). SCRFD is skipped when ``detection.enable_scrfd`` is off (its weights are
+    non-commercial); the two detectors run at the same time when parallel inference is on.
 
     Returns the candidates and the names of the detectors that really ran (empty when none could run).
     """
     if image_bgr is None or image_bgr.size == 0:
         return [], []
 
+    detectors = [(MODEL_NAME_YUNET, _yunet_passes)]
+    if settings.detection.enable_scrfd:
+        detectors.insert(0, (MODEL_NAME_SCRFD, _scrfd_pass))
+    outcomes = run_all([partial(_run_detector, name, run, image_bgr) for name, run in detectors])
+
     faces: list[DetectedFace] = []
     ran: list[str] = []
-    for name, run in ((MODEL_NAME_SCRFD, _scrfd_pass), (MODEL_NAME_YUNET, _yunet_passes)):
-        try:
-            faces.extend(run(image_bgr))
+    for (name, _), found in zip(detectors, outcomes, strict=True):
+        if found is not None:
+            faces.extend(found)
             ran.append(name)
-        except Exception as exc:
-            logger.warning("%s unavailable: %s", name, exc)
     return _merge_faces(faces), ran
 
 
@@ -241,7 +261,7 @@ def _build_views(image_bgr: np.ndarray, face_box: list[int], body_box: list[int]
     """One [1, 6, 384, 384] input per configured (margin, mirrored) view: face channels, then body channels."""
     body = _crop_rect(image_bgr, body_box, 0.0)
     views = []
-    for margin, mirrored in settings.AGE_VIEWS:
+    for margin, mirrored in settings.age.views:
         face = _crop_rect(image_bgr, face_box, margin)
         if face is None:
             continue
@@ -258,13 +278,13 @@ def _estimate_age(ages: np.ndarray, result: Demographics) -> float:
     """Fill the age fields from per-view regressions. Returns the mean age (for gender gating)."""
     mean_age = float(np.clip(np.mean(ages), 0.0, 100.0))
     view_std = float(np.std(ages))
-    sigma = math.sqrt((settings.AGE_MODEL_MAE_YEARS * settings.AGE_SIGMA_PER_MAE) ** 2 + view_std**2)
-    result.p_under_18 = round(_normal_cdf((settings.ADULT_AGE_YEARS - mean_age) / sigma), 4)
+    sigma = math.sqrt((settings.age.model_mae_years * settings.age.sigma_per_mae) ** 2 + view_std**2)
+    result.p_under_18 = round(_normal_cdf((settings.age.adult_years - mean_age) / sigma), 4)
 
-    if view_std > settings.AGE_UNSURE_VIEW_STD:
+    if view_std > settings.age.unsure_view_std:
         result.age_group, result.age_status = UNSURE, UNSURE
         result.notes.append(f"Age views disagree by {view_std:.1f} years, so the age is not reliable.")
-    elif not settings.AGE_MIN_CREDIBLE <= mean_age <= settings.AGE_MAX_CREDIBLE:
+    elif not settings.age.min_credible <= mean_age <= settings.age.max_credible:
         result.age_group, result.age_status = UNSURE, UNSURE
         result.notes.append("The estimate lies outside the range the model was trained on.")
     else:
@@ -275,7 +295,7 @@ def _estimate_age(ages: np.ndarray, result: Demographics) -> float:
         result.age_group_probability = round(
             _normal_cdf((high - mean_age) / sigma) - _normal_cdf((low - mean_age) / sigma), 4
         )
-        half = settings.AGE_INTERVAL_Z * sigma
+        half = settings.age.interval_z * sigma
         result.age_range = [round(max(0.0, mean_age - half), 1), round(min(100.0, mean_age + half), 1)]
     return mean_age
 
@@ -286,13 +306,13 @@ def _estimate_gender(female_probs: np.ndarray, mean_age: float, result: Demograp
     sides = {bool(p >= 0.5) for p in female_probs}
     result.gender_confidence = round(confidence, 4)
 
-    if mean_age < settings.GENDER_MIN_AGE_YEARS:
+    if mean_age < settings.age.gender_min_age:
         result.gender = UNSURE
         result.notes.append("Gender is not estimated for apparent children: it cannot be judged reliably at this age.")
     elif len(sides) > 1:
         result.gender = UNSURE
         result.notes.append("Gender views disagree.")
-    elif confidence < settings.GENDER_SURETY_THRESHOLD:
+    elif confidence < settings.age.gender_surety:
         result.gender = UNSURE
     else:
         result.gender = "Female" if mean_female >= 0.5 else "Male"
@@ -304,6 +324,11 @@ def _parse_head(head: np.ndarray) -> tuple[float, float]:
     probs = np.exp(logits - logits.max())
     probs /= probs.sum()
     return float(head[2]) * MIVOLO_AGE_SCALE + MIVOLO_AGE_OFFSET, float(probs[1])
+
+
+def _run_view(session: ort.InferenceSession, input_name: str, view: np.ndarray) -> np.ndarray:
+    """MiVOLO's [male logit, female logit, raw age] for one view."""
+    return np.asarray(session.run(["head"], {input_name: view})[0][0], dtype=np.float32)
 
 
 def predict_face_demographics(
@@ -333,7 +358,8 @@ def predict_face_demographics(
 
     try:
         # The exported graph has a fixed batch size of 1, so each view is its own run.
-        heads = [session.run(["head"], {session.get_inputs()[0].name: view})[0][0] for view in views]
+        input_name = session.get_inputs()[0].name
+        heads = run_all([partial(_run_view, session, input_name, view) for view in views])
     except Exception:
         logger.exception("Age/gender inference failed")
         return result

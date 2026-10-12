@@ -204,7 +204,7 @@ def test_download_streams_response_to_file(models_dir):
     with patch.object(mm.urllib.request, "urlopen", return_value=response) as urlopen:
         mm._download_file_stream("https://example.test/m.onnx", models_dir / "out.bin")
     assert (models_dir / "out.bin").read_bytes() == b"abcdef"
-    assert urlopen.call_args.kwargs["timeout"] == settings.DOWNLOAD_TIMEOUT_SECONDS
+    assert urlopen.call_args.kwargs["timeout"] == settings.models.download_timeout_seconds
 
 
 def test_check_models_status_reports_each_model_honestly(models_dir):
@@ -251,7 +251,7 @@ def test_get_session_creates_once_with_bounded_threads(models_dir):
 
 
 def test_get_session_respects_explicit_thread_setting(models_dir, monkeypatch):
-    monkeypatch.setattr(settings, "ORT_INTRA_OP_THREADS", 2)
+    monkeypatch.setattr(settings.models, "ort_threads", 2)
     seen = {}
 
     def factory(path, sess_options=None, providers=None):
@@ -273,7 +273,7 @@ def test_get_session_returns_none_when_runtime_fails(models_dir):
 
 def test_providers_prefer_accelerators_only_when_cpu_not_forced(monkeypatch):
     assert mm._providers() == ["CPUExecutionProvider"]
-    monkeypatch.setattr(settings, "FORCE_CPU", False)
+    monkeypatch.setattr(settings.models, "force_cpu", False)
     with patch.object(
         mm.ort, "get_available_providers", return_value=["CUDAExecutionProvider", "CPUExecutionProvider"]
     ):

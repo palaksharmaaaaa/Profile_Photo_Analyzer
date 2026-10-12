@@ -148,6 +148,18 @@ def test_detect_faces_scrfd_adds_faces_that_yunet_misses():
     assert faces[0].bbox == [64, 64, 104, 104]
 
 
+def test_detect_faces_without_scrfd_when_it_is_switched_off(monkeypatch):
+    monkeypatch.setattr(settings.detection, "enable_scrfd", False)
+    image = np.full((640, 640, 3), 90, dtype=np.uint8)
+    yunet = FakeDetector([yunet_row(100, 100, 80, 80, 0.9)], original_width=640)
+    p_session, p_yunet = both_detectors(scrfd_session(), yunet)
+    with p_session as get_session, p_yunet:
+        faces, ran = fs.detect_faces(image)
+    assert ran == [fs.MODEL_NAME_YUNET]
+    assert [f.source for f in faces] == [fs.MODEL_NAME_YUNET]
+    assert all(call.args != ("scrfd",) for call in get_session.call_args_list)
+
+
 def test_detect_faces_small_image_uses_second_upscaled_yunet_pass(monkeypatch):
     yunet = FakeDetector([yunet_row(100, 100, 80, 80, 0.9)], original_width=300)
     p_session, p_yunet = both_detectors(None, yunet)
@@ -158,7 +170,7 @@ def test_detect_faces_small_image_uses_second_upscaled_yunet_pass(monkeypatch):
     assert faces[0].bbox == [100, 100, 180, 180]
     assert get.call_count == 2  # 1x and 2x
 
-    monkeypatch.setattr(settings, "SMALL_IMAGE_UPSCALE_SIDE", 100)
+    monkeypatch.setattr(settings.detection, "small_image_upscale_side", 100)
     p_session, p_yunet = both_detectors(None, yunet)
     with p_session, p_yunet as get:
         fs.detect_faces(IMG)
@@ -219,7 +231,7 @@ def test_letterbox_normalise_missing_crop_is_black_and_upscales_small_crops():
 def test_views_are_face_channels_then_body_channels_for_every_configured_view():
     body = [20, 20, 280, 290]
     views = fs._build_views(IMG, BOX, body)
-    assert len(views) == len(settings.AGE_VIEWS)
+    assert len(views) == len(settings.age.views)
     assert all(v.shape == (1, 6, 384, 384) for v in views)
     no_body = fs._build_views(IMG, BOX, None)
     assert np.allclose(no_body[0][0, 3:], fs._letterbox_normalise(None))
@@ -286,7 +298,7 @@ def test_female_gender():
 def test_minor_probability_rises_near_the_adult_boundary():
     demo = predict([head(17.0, female_logit=5.0, male_logit=-5.0)])
     assert demo.age_group == "15 to 18"
-    assert demo.p_under_18 > settings.MINOR_RISK_PROBABILITY
+    assert demo.p_under_18 > settings.age.minor_risk_probability
 
 
 def test_age_is_unsure_when_views_disagree_but_minor_probability_is_kept():
@@ -333,8 +345,8 @@ def test_body_box_is_passed_through_to_the_model():
     with patch.object(fs, "get_session", return_value=FakeSession(run, "faces_bodies")):
         fs.predict_face_demographics(IMG, BOX, body_box=[20, 20, 280, 290])
         fs.predict_face_demographics(IMG, BOX)
-    assert len(seen) == 2 * len(settings.AGE_VIEWS)
-    assert not np.allclose(seen[0], seen[len(settings.AGE_VIEWS)])  # with vs without a body
+    assert len(seen) == 2 * len(settings.age.views)
+    assert not np.allclose(seen[0], seen[len(settings.age.views)])  # with vs without a body
 
 
 def test_unusable_face_skips_inference_and_says_unsure():

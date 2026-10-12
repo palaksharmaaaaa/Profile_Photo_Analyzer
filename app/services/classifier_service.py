@@ -5,7 +5,6 @@ crop (real human face, animal, cartoon, ...) from SigLIP2.
 
 import logging
 from functools import lru_cache
-from typing import Any
 
 import cv2
 import numpy as np
@@ -13,7 +12,9 @@ import numpy as np
 from app.core.config import settings
 from app.services import semantic_service
 from app.services.image_utils import clamp_box, crop_square, letterbox_top_left
+from app.services.label_prompts import IMAGE_CLASSES
 from app.services.model_manager import MODEL_SPECS, get_session
+from app.services.types import Box, Entity, ImageTypeItem, PredictionItem, Verdict
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ VERDICT_UNAVAILABLE = "unavailable"
 # --------------------------------------------------------------------------------------
 
 
-def _unavailable_image_type() -> dict[str, Any]:
+def _unavailable_image_type() -> ImageTypeItem:
     return {
         "status": "UNCERTAIN",
         "label": "Uncertain",
@@ -67,26 +68,28 @@ def _unavailable_image_type() -> dict[str, Any]:
     }
 
 
-def classify_image_type(image_bgr: np.ndarray) -> dict[str, Any]:
+def classify_image_type(image_bgr: np.ndarray) -> ImageTypeItem:
     """Classify the whole upload as a photograph or as a cartoon, anime, painting, 3D render or diagram."""
     results = semantic_service.classify_images([image_bgr], "image")
     if not results:
         return _unavailable_image_type()
 
     result = results[0]
-    classes = {c.name: c for c in semantic_service.IMAGE_CLASSES}
+    classes = {c.name: c for c in IMAGE_CLASSES}
     photo_share = sum(p for name, p in result.probabilities.items() if classes[name].kind == PHOTO_GROUP)
     synthetic_share = sum(p for name, p in result.probabilities.items() if classes[name].kind == SYNTHETIC_GROUP)
 
-    if photo_share >= settings.IMAGE_TYPE_MIN_SHARE:
+    if photo_share >= settings.verification.image_type_min_share:
         status, reason = "PHOTO_LIKE", "Most of the probability is on photographic image types."
-    elif synthetic_share >= settings.IMAGE_TYPE_MIN_SHARE:
+    elif synthetic_share >= settings.verification.image_type_min_share:
         status, reason = "NON_PHOTO", "Most of the probability is on drawn, painted or computer-made image types."
     else:
         status, reason = "NEEDS_REVIEW", "The image type could not be determined confidently."
 
     ranked = sorted(result.probabilities.items(), key=lambda item: item[1], reverse=True)
-    predictions = [{"label": classes[name].display, "probability": probability} for name, probability in ranked]
+    predictions: list[PredictionItem] = [
+        {"label": classes[name].display, "probability": probability} for name, probability in ranked
+    ]
 
     # The label names the best class inside the winning group, so it never contradicts the status.
     winning_group = {"PHOTO_LIKE": PHOTO_GROUP, "NON_PHOTO": SYNTHETIC_GROUP}.get(status)
@@ -107,64 +110,54 @@ def classify_image_type(image_bgr: np.ndarray) -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 
-def _verdict_from_probabilities(result: semantic_service.SemanticResult) -> dict[str, Any]:
-    """Turn SigLIP2 prompt scores into a verdict, preferring ``unsure`` over guessing."""
-    probs = result.probabilities
-    human = probs.get("real_human", 0.0)
-    base = {"scores": probs, "margin": result.margin}
-
-    if result.name == "real_human" and human >= settings.HUMAN_MIN_PROB and result.margin >= settings.HUMAN_MIN_MARGIN:
-        return {**base, "verdict": VERDICT_HUMAN, "face_type": "human", "label": result.display, "confidence": human}
-
-    if human < settings.NONHUMAN_MAX_HUMAN_PROB:
-        if result.name == "not_face":
-            if result.probability >= settings.NOT_FACE_MIN_PROB:
-                return {
-                    **base,
-                    "verdict": VERDICT_NOT_FACE,
-                    "face_type": result.kind,
-                    "label": result.display,
-                    "confidence": result.probability,
-                }
-        else:
-            return {
-                **base,
-                "verdict": VERDICT_NON_HUMAN,
-                "face_type": result.kind,
-                "label": result.display,
-                "confidence": result.probability,
-            }
-
+def _verdict(
+    kind: str, face_type: str, label: str, confidence: float | None, result: semantic_service.SemanticResult | None
+) -> Verdict:
     return {
-        **base,
-        "verdict": VERDICT_UNSURE,
-        "face_type": "unsure",
-        "label": f"Unsure (closest: {result.display})",
-        "confidence": result.probability,
+        "verdict": kind,
+        "face_type": face_type,
+        "label": label,
+        "confidence": confidence,
+        "margin": None if result is None else result.margin,
+        "scores": {} if result is None else result.probabilities,
     }
 
 
-def classify_boxes(image_bgr: np.ndarray, boxes: list[list[int]]) -> list[dict[str, Any]]:
+def _verdict_from_probabilities(result: semantic_service.SemanticResult) -> Verdict:
+    """Turn SigLIP2 prompt scores into a verdict, preferring ``unsure`` over guessing."""
+    settings_ = settings.verification
+    human = result.probabilities.get("real_human", 0.0)
+
+    if (
+        result.name == "real_human"
+        and human >= settings_.human_min_prob
+        and result.margin >= settings_.human_min_margin
+    ):
+        return _verdict(VERDICT_HUMAN, "human", result.display, human, result)
+
+    if human < settings_.nonhuman_max_human_prob:
+        if result.name != "not_face":
+            return _verdict(VERDICT_NON_HUMAN, result.kind, result.display, result.probability, result)
+        if result.probability >= settings_.not_face_min_prob:
+            return _verdict(VERDICT_NOT_FACE, result.kind, result.display, result.probability, result)
+
+    return _verdict(VERDICT_UNSURE, "unsure", f"Unsure (closest: {result.display})", result.probability, result)
+
+
+def classify_boxes(image_bgr: np.ndarray, boxes: list[Box]) -> list[Verdict]:
     """Verify what each box contains (real human, animal, cartoon, ...). One verdict per box, in order."""
     if not boxes:
         return []
 
     crops, index = [], []
     for i, box in enumerate(boxes):
-        crop = crop_square(image_bgr, box, settings.FACE_CROP_MARGIN)
+        crop = crop_square(image_bgr, box, settings.verification.crop_margin)
         if crop is not None and crop.size:
             crops.append(crop)
             index.append(i)
 
-    unavailable = {
-        "verdict": VERDICT_UNAVAILABLE,
-        "face_type": "unsure",
-        "label": "Unsure (verification model unavailable)",
-        "confidence": None,
-        "margin": None,
-        "scores": {},
-    }
-    verdicts = [dict(unavailable) for _ in boxes]
+    unavailable = _verdict(VERDICT_UNAVAILABLE, "unsure", "Unsure (verification model unavailable)", None, None)
+    verdicts = [unavailable.copy() for _ in boxes]
     results = semantic_service.classify_images(crops, "face") if crops else None
     if results:
         for i, result in zip(index, results, strict=True):
@@ -211,9 +204,9 @@ def _to_entities(
     source: str,
     width: int,
     height: int,
-) -> list[dict[str, Any]]:
+) -> list[Entity]:
     boxes_xywh = [[float(b[0]), float(b[1]), float(b[2] - b[0]), float(b[3] - b[1])] for b in boxes_xyxy]
-    entities = []
+    entities: list[Entity] = []
     for i in _nms(boxes_xywh, [float(s) for s in scores], threshold):
         x1, y1, x2, y2 = clamp_box([int(round(v)) for v in boxes_xyxy[i]], width, height)
         if x2 <= x1 or y2 <= y1:
@@ -238,7 +231,7 @@ def _decode_yolox(
     height: int,
     threshold: float,
     classes: dict[int, tuple[str, str]] = COCO_ANIMAL_CLASSES,
-) -> list[dict[str, Any]]:
+) -> list[Entity]:
     """Decode raw YOLOX output [1, 8400, 85] (grid/stride decoding, objectness x class score) for ``classes``."""
     if output.ndim != 3 or output.shape[2] < 6:
         return []
@@ -262,7 +255,7 @@ def _decode_yolox(
     return _to_entities(boxes, best_score[keep], labels, threshold, MODEL_NAME_YOLOX, width, height)
 
 
-def _decode_anime(output: np.ndarray, ratio: float, width: int, height: int, threshold: float) -> list[dict[str, Any]]:
+def _decode_anime(output: np.ndarray, ratio: float, width: int, height: int, threshold: float) -> list[Entity]:
     """Decode the single-class Ultralytics-style anime face output [1, 5, 8400]."""
     if output.ndim != 3 or output.shape[1] < 5:
         return []
@@ -287,7 +280,7 @@ def _decode_anime(output: np.ndarray, ratio: float, width: int, height: int, thr
 
 def detect_entities_and_persons(
     image_bgr: np.ndarray,
-) -> tuple[list[dict[str, Any]], list[list[int]], list[str]]:
+) -> tuple[list[Entity], list[Box], list[str]]:
     """
     Locate animals/birds (YOLOX), people (YOLOX, same pass) and anime faces (DeepGHS).
 
@@ -298,8 +291,8 @@ def detect_entities_and_persons(
         return [], [], []
 
     height, width = image_bgr.shape[:2]
-    entities: list[dict[str, Any]] = []
-    persons: list[list[int]] = []
+    entities: list[Entity] = []
+    persons: list[Box] = []
     executed: list[str] = []
 
     yolox = get_session("yolox")
@@ -308,8 +301,8 @@ def detect_entities_and_persons(
             canvas, ratio = _letterbox(image_bgr, to_rgb=False)
             blob = canvas.astype(np.float32).transpose(2, 0, 1)[np.newaxis]
             output = yolox.run(None, {yolox.get_inputs()[0].name: blob})[0]
-            entities.extend(_decode_yolox(output, ratio, width, height, settings.ANIMAL_CONF_THRESHOLD))
-            people = _decode_yolox(output, ratio, width, height, settings.PERSON_CONF_THRESHOLD, PERSON_CLASS)
+            entities.extend(_decode_yolox(output, ratio, width, height, settings.detection.animal_threshold))
+            people = _decode_yolox(output, ratio, width, height, settings.detection.person_threshold, PERSON_CLASS)
             persons.extend(person["box_xyxy"] for person in people)
             executed.append(MODEL_NAME_YOLOX)
         except Exception:
@@ -321,7 +314,7 @@ def detect_entities_and_persons(
             canvas, ratio = _letterbox(image_bgr, to_rgb=True)
             blob = (canvas.astype(np.float32) / 255.0).transpose(2, 0, 1)[np.newaxis]
             output = anime.run(None, {anime.get_inputs()[0].name: blob})[0]
-            entities.extend(_decode_anime(output, ratio, width, height, settings.ANIME_FACE_CONF_THRESHOLD))
+            entities.extend(_decode_anime(output, ratio, width, height, settings.detection.anime_threshold))
             executed.append(MODEL_NAME_ANIME_FACE)
         except Exception:
             logger.exception("Anime face detection failed")

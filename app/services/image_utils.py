@@ -78,17 +78,17 @@ def decode_image_bytes(contents: bytes) -> DecodedImage:
 
     # Pillow itself enforces the pixel limit while opening: a warning above it (turned into an error
     # below) and DecompressionBombError at twice the limit.
-    Image.MAX_IMAGE_PIXELS = settings.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = settings.upload.max_pixels
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             image = Image.open(io.BytesIO(contents))
             width, height = image.size
-            if width > settings.MAX_IMAGE_DIMENSION or height > settings.MAX_IMAGE_DIMENSION:
-                raise InvalidImageError(f"Image dimension exceeds {settings.MAX_IMAGE_DIMENSION}px limit.")
+            if width > settings.upload.max_dimension or height > settings.upload.max_dimension:
+                raise InvalidImageError(f"Image dimension exceeds {settings.upload.max_dimension}px limit.")
             if image.format in ("JPEG", "MPO"):
                 # Let the JPEG decoder produce a reduced-size image directly, saving memory.
-                image.draft("RGB", (settings.WORKING_MAX_SIDE * 2, settings.WORKING_MAX_SIDE * 2))
+                image.draft("RGB", (settings.upload.working_max_side * 2, settings.upload.working_max_side * 2))
             image.seek(0)
             image.load()
     except InvalidImageError:
@@ -104,8 +104,8 @@ def decode_image_bytes(contents: bytes) -> DecodedImage:
 
     downscaled = False
     longest = max(rgb.size)
-    if longest > settings.WORKING_MAX_SIDE:
-        scale = settings.WORKING_MAX_SIDE / longest
+    if longest > settings.upload.working_max_side:
+        scale = settings.upload.working_max_side / longest
         rgb = rgb.resize(
             (max(1, round(rgb.width * scale)), max(1, round(rgb.height * scale))),
             Image.Resampling.LANCZOS,

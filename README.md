@@ -73,7 +73,7 @@ add latency and a chance of being wrong.
 | `age_group` | The 3-year bracket containing the estimated age, `Unsure`, or `Not Detected`. |
 | `estimated_age`, `age_range` | Mean over the views, and an 80 % interval. The interval is wide on purpose (see *Limits*). |
 | `age_group_probability` | Probability that the true age lies inside `age_group`; typically 12-18 %, because a 3-year bracket is narrower than the model's error. |
-| `p_under_18`, `possible_minor` | Probability the person is under 18, and whether it is at least `PPA_MINOR_RISK_PROBABILITY` (0.10). Use this, not the bracket, for policy decisions. |
+| `p_under_18`, `possible_minor` | Probability the person is under 18, and whether it is at least `PPA_AGE__MINOR_RISK_PROBABILITY` (0.10). Use this, not the bracket, for policy decisions. |
 | `gender` | `Female`, `Male`, `Unsure` or `Not Detected`. Appearance-based; `Unsure` for apparent children, low scores or disagreeing views. |
 
 An `Unsure` age or gender never carries a number. Faces that are too small, too turned or too blurred for the model are
@@ -160,19 +160,19 @@ important ones:
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `PPA_ENVIRONMENT` | `development` | `production` requires `PPA_API_KEY`. |
-| `PPA_API_KEY` | none | Sent as `X-API-Key` or `Authorization: Bearer ...`. |
-| `PPA_MAX_UPLOAD_BYTES` | 10 MiB | Upload limit. |
-| `PPA_WORKING_MAX_SIDE` | 2048 | Larger images are downscaled to this for analysis. |
-| `PPA_HUMAN_MIN_PROB`, `PPA_HUMAN_MIN_MARGIN` | 0.60, 0.25 | How sure SigLIP2 must be to call a crop a real human face. |
-| `PPA_SCRFD_THRESHOLD` | 0.40 | Minimum SCRFD score for a face candidate. |
-| `PPA_MINOR_RISK_PROBABILITY` | 0.10 | `p_under_18` at or above which `possible_minor` is set. |
-| `PPA_AGE_MODEL_MAE_YEARS` | 5.1 | Average age error assumed when sizing the age range. |
-| `PPA_AGE_UNSURE_VIEW_STD` | 6.0 | Age is `Unsure` if the views of a face differ by more than this (years). |
-| `PPA_GENDER_SURETY_THRESHOLD` | 0.80 | Below this model score the gender is `Unsure`. |
-| `PPA_ORT_INTRA_OP_THREADS` | 0 (= min(4, cores)) | ONNX Runtime threads per model; "all cores" measured about 4x slower. |
-| `PPA_FORCE_CPU` | true | `false` lets ONNX Runtime use CUDA or DirectML if installed. |
-| `PPA_RATE_LIMIT_PER_MINUTE`, `PPA_MAX_CONCURRENT_REQUESTS` | 60, 10 | Per-process abuse limits; use a gateway for multi-worker setups. |
+| `PPA_ENVIRONMENT` | `development` | `production` requires `PPA_SECURITY__API_KEY`. |
+| `PPA_SECURITY__API_KEY` | none | Sent as `X-API-Key` or `Authorization: Bearer ...`. |
+| `PPA_UPLOAD__MAX_BYTES` | 10 MiB | Upload limit. |
+| `PPA_UPLOAD__WORKING_MAX_SIDE` | 2048 | Larger images are downscaled to this for analysis. |
+| `PPA_VERIFICATION__HUMAN_MIN_PROB`, `PPA_VERIFICATION__HUMAN_MIN_MARGIN` | 0.60, 0.25 | How sure SigLIP2 must be to call a crop a real human face. |
+| `PPA_DETECTION__SCRFD_THRESHOLD` | 0.40 | Minimum SCRFD score for a face candidate. |
+| `PPA_AGE__MINOR_RISK_PROBABILITY` | 0.10 | `p_under_18` at or above which `possible_minor` is set. |
+| `PPA_AGE__MODEL_MAE_YEARS` | 5.1 | Average age error assumed when sizing the age range. |
+| `PPA_AGE__UNSURE_VIEW_STD` | 6.0 | Age is `Unsure` if the views of a face differ by more than this (years). |
+| `PPA_AGE__GENDER_SURETY` | 0.80 | Below this model score the gender is `Unsure`. |
+| `PPA_MODELS__ORT_THREADS` | 0 (= min(4, cores)) | ONNX Runtime threads per model; "all cores" measured about 4x slower. |
+| `PPA_MODELS__FORCE_CPU` | true | `false` lets ONNX Runtime use CUDA or DirectML if installed. |
+| `PPA_SECURITY__RATE_LIMIT_PER_MINUTE`, `PPA_SECURITY__MAX_CONCURRENT_REQUESTS` | 60, 10 | Per-process abuse limits; use a gateway for multi-worker setups. |
 
 ---
 

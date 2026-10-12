@@ -46,7 +46,7 @@ def _load_bank() -> dict[str, tuple[list[str], np.ndarray]] | None:
     with _bank_lock:
         if _bank is not None:
             return _bank
-        path = settings.MODELS_DIR / LABEL_BANK_NAME
+        path = settings.models.directory / LABEL_BANK_NAME
         try:
             with np.load(path, allow_pickle=False) as data:
                 bank: dict[str, tuple[list[str], np.ndarray]] = {}
@@ -99,13 +99,13 @@ def embed_images(images_bgr: list[np.ndarray]) -> np.ndarray | None:
         logger.exception("SigLIP2 embedding failed")
         return None
     outputs = np.stack(rows)
-    return outputs / np.maximum(np.linalg.norm(outputs, axis=1, keepdims=True), 1e-12)
+    return np.asarray(outputs / np.maximum(np.linalg.norm(outputs, axis=1, keepdims=True), 1e-12))
 
 
 def _softmax(values: np.ndarray) -> np.ndarray:
     shifted = values - np.max(values)
     exp = np.exp(shifted)
-    return exp / np.sum(exp)
+    return np.asarray(exp / np.sum(exp))
 
 
 def classify_embeddings(embeddings: np.ndarray, taxonomy: str) -> list[SemanticResult] | None:
@@ -118,7 +118,7 @@ def classify_embeddings(embeddings: np.ndarray, taxonomy: str) -> list[SemanticR
 
     results: list[SemanticResult] = []
     for emb in embeddings:
-        probs = _softmax((vectors @ emb) * settings.SEMANTIC_TEMPERATURE)
+        probs = _softmax((vectors @ emb) * settings.verification.temperature)
         order = np.argsort(-probs)
         best = classes[names[int(order[0])]]
         runner_up = float(probs[order[1]]) if len(order) > 1 else 0.0

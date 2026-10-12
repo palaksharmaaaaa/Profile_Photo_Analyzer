@@ -93,7 +93,7 @@ def test_decode_animated_gif_uses_first_frame():
 
 
 def test_decode_downscales_to_working_size(monkeypatch):
-    monkeypatch.setattr(settings, "WORKING_MAX_SIDE", 100)
+    monkeypatch.setattr(settings.upload, "working_max_side", 100)
     decoded = decode_image_bytes(encode(Image.new("RGB", (300, 200), "grey"), "PNG"))
     assert max(decoded.image.size) == 100
     assert decoded.downscaled is True
@@ -101,14 +101,14 @@ def test_decode_downscales_to_working_size(monkeypatch):
 
 
 def test_decode_uses_jpeg_draft_for_big_jpegs(monkeypatch):
-    monkeypatch.setattr(settings, "WORKING_MAX_SIDE", 64)
+    monkeypatch.setattr(settings.upload, "working_max_side", 64)
     decoded = decode_image_bytes(encode(Image.new("RGB", (1024, 768), "grey"), "JPEG"))
     assert max(decoded.image.size) == 64
     assert (decoded.original_width, decoded.original_height) == (1024, 768)
 
 
 def test_decode_rejects_oversized_dimension(monkeypatch):
-    monkeypatch.setattr(settings, "MAX_IMAGE_DIMENSION", 50)
+    monkeypatch.setattr(settings.upload, "max_dimension", 50)
     too_wide = encode(Image.new("RGB", (60, 10), "grey"), "PNG")
     with pytest.raises(InvalidImageError, match="dimension"):
         decode_image_bytes(too_wide)
@@ -116,7 +116,7 @@ def test_decode_rejects_oversized_dimension(monkeypatch):
 
 @pytest.mark.parametrize("pixels", [1500, 50_000])
 def test_decode_rejects_decompression_bomb(monkeypatch, pixels):
-    monkeypatch.setattr(settings, "MAX_IMAGE_PIXELS", 1000)
+    monkeypatch.setattr(settings.upload, "max_pixels", 1000)
     side = int(pixels**0.5)
     bomb = encode(Image.new("RGB", (side, side), "grey"), "PNG")
     with pytest.raises(InvalidImageError, match="decompression"):

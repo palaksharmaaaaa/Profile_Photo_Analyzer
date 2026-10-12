@@ -41,7 +41,7 @@ def test_information_rejects_near_uniform_image():
 def test_information_accepts_textured_image():
     result = check_image_information(textured())
     assert result["has_information"] is True
-    assert result["entropy"] > settings.MIN_IMAGE_ENTROPY
+    assert result["entropy"] > settings.information.min_entropy
 
 
 def test_information_downscales_large_images():
@@ -105,7 +105,7 @@ def test_quality_flags_tiny_and_huge_faces():
 
 
 def test_quality_flags_huge_face_that_is_not_at_edge(monkeypatch):
-    monkeypatch.setattr(settings, "MAX_FACE_AREA_RATIO", 0.05)
+    monkeypatch.setattr(settings.quality, "max_face_area_ratio", 0.05)
     result = assess_face_quality(textured(), [200, 200, 400, 400], FRONTAL)
     assert "fills almost the whole frame" in result["reason"]
 

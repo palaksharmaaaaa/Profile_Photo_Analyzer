@@ -75,7 +75,7 @@ age/gender model). Without labels this shows how the two models differ, not whic
   truth cannot be said without labels.
 * **More possible minors (14 % to 24 %)** follows from the younger estimates and from the wider age range now assumed
   (average error 5.1 years instead of 4.5): 60 of the 72 flagged faces have an estimated age of 22 or more. The threshold
-  `PPA_MINOR_RISK_PROBABILITY` is a policy choice, and the error figure is an assumption, not a measurement on this data.
+  `PPA_AGE__MINOR_RISK_PROBABILITY` is a policy choice, and the error figure is an assumption, not a measurement on this data.
 * **Which detector's box is verified:** SCRFD's boxes are slightly looser than YuNet's, and the verifier scored many small
   faces within a few hundredths of its threshold. On 81 real faces it accepted 81 of 81 YuNet boxes but only 76 of 81 SCRFD
   boxes, so when both detectors find the same face the YuNet box is kept and SCRFD only adds faces YuNet misses. One
@@ -102,7 +102,7 @@ transparent, blank, GIF, TIFF, BMP and WebP inputs. They show the logic works en
 | Claim | Source | Caveat |
 | :--- | :--- | :--- |
 | MiVOLO v2: age error 3.65 years, gender accuracy 98 % (LAGENDA test split); about 70 % age-bracket and 97 % gender accuracy on Adience | [MiVOLO repository](https://github.com/WildChlamydia/MiVOLO), [model card](https://hf.co/iitolstykh/mivolo_v2) | The authors' own splits, on the original PyTorch model. This service runs a third-party ONNX export, which its author checked against PyTorch to 0.01 years on 41 faces; `build_models.py` checks the exposed gender output. |
-| MiVOLO: average age error 5.1 years over 8 datasets; 21 % of minors passed as adults | [independent benchmark](https://arxiv.org/html/2602.07815v1) (1,100 images) | Different protocol; a preprint. Source of `PPA_AGE_MODEL_MAE_YEARS`. |
+| MiVOLO: average age error 5.1 years over 8 datasets; 21 % of minors passed as adults | [independent benchmark](https://arxiv.org/html/2602.07815v1) (1,100 images) | Different protocol; a preprint. Source of `PPA_AGE__MODEL_MAE_YEARS`. |
 | SCRFD-10G: about 83 % AP on WIDER FACE hard; YuNet about 75 % | the authors' papers | Not re-run here. |
 | YOLOX and SigLIP2 benchmark results | their papers and repositories | Not re-run here. |
 

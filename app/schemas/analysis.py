@@ -1,4 +1,4 @@
-"""The public response contract of ``POST /analyze-profile-photo``."""
+"""The public contract of the analysis API: results, progress events, jobs and errors."""
 
 from enum import StrEnum
 
@@ -148,13 +148,54 @@ class AnalysisResponse(BaseModel):
     image_type: ImageType
     pipeline_steps: list[PipelineStep] = Field(default_factory=list)
     diagnostics: Diagnostics
-    original_image: str | None = None  # data URL
-    annotated_image: str | None = None  # data URL
+    annotated_image: str | None = None  # data URL; the original is not echoed, the client already has it
     filename: str | None = None
     legend: str | None = None  # explains the box colours of annotated_image
     disclaimer: str | None = None
 
 
 class ErrorResponse(BaseModel):
+    """The one error shape of the API."""
+
     accepted: bool = False
-    reason: str
+    code: str  # stable, machine-readable: empty_file, file_too_large, invalid_image, rate_limited, ...
+    reason: str  # a sentence for people
+    request_id: str | None = None  # also sent as the X-Request-ID header
+
+
+class StageEventModel(BaseModel):
+    """One stage of the analysis changed state (also the payload of the job event stream)."""
+
+    step_id: str
+    step_number: int
+    title: str
+    status: str  # running, completed, failed or skipped
+    detail: str = ""
+    elapsed_ms: float = 0.0
+
+
+class JobState(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class JobCreated(BaseModel):
+    """Answer to ``POST /v1/jobs``: where to follow the analysis."""
+
+    job_id: str
+    status: JobState
+    status_url: str
+    events_url: str
+
+
+class JobStatus(BaseModel):
+    """A job with the stages seen so far and, once finished, its result or its error."""
+
+    job_id: str
+    status: JobState
+    filename: str | None = None
+    stages: list[StageEventModel] = Field(default_factory=list)
+    result: AnalysisResponse | None = None
+    error: ErrorResponse | None = None

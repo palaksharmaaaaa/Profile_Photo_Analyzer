@@ -86,7 +86,7 @@ def one_hot(taxonomy: str, name: str, dims: int = 16) -> np.ndarray:
 
 @pytest.fixture
 def models_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "MODELS_DIR", tmp_path)
+    monkeypatch.setattr(settings.models, "directory", tmp_path)
     return tmp_path
 
 

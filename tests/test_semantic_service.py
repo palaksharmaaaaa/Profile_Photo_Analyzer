@@ -105,7 +105,7 @@ def test_classify_embeddings_ambiguous_input_has_small_margin(label_bank):
 
 
 def test_temperature_controls_sharpness(label_bank, monkeypatch):
-    monkeypatch.setattr(settings, "SEMANTIC_TEMPERATURE", 1.0)
+    monkeypatch.setattr(settings.verification, "temperature", 1.0)
     (result,) = ss.classify_embeddings(one_hot("face", "animal")[np.newaxis], "face")
     assert result.probability < 0.5
 

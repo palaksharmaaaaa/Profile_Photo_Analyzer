@@ -109,7 +109,7 @@ class Harness:
         self.demographics_calls.append(kwargs)
         return self.demographics
 
-    def run(self, image: np.ndarray | None = None):
+    def run(self, image: np.ndarray | None = None, **kwargs):
         image = textured(SIZE) if image is None else image
         pil = Image.fromarray(image[:, :, ::-1])
         with (
@@ -124,7 +124,7 @@ class Harness:
             patch.object(az, "predict_face_demographics", side_effect=self._predict),
             patch.object(az.semantic_service, "is_available", side_effect=lambda: self.semantic_available),
         ):
-            result = az.analyze_profile_photo_image(pil, filename="p.jpg", file_format="image/jpeg")
+            result = az.analyze_profile_photo_image(pil, filename="p.jpg", file_format="image/jpeg", **kwargs)
         AnalysisResponse.model_validate(result)  # every payload must satisfy the public schema
         return result
 
@@ -179,7 +179,6 @@ def test_single_real_human_passes_with_full_demographics(h):
     models = result["diagnostics"]["models_executed"]
     assert models[0] == az.MODEL_INFO_CHECK
     assert {"SigLIP2 test", "Face detector test", "Age model test"} <= set(models)
-    assert result["original_image"].startswith("data:image/jpeg")
     assert result["annotated_image"].startswith("data:image/jpeg")
 
 
@@ -425,40 +424,40 @@ def test_detector_hit_on_a_real_face_or_non_face_is_discarded(kind):
 
 def test_anime_detector_alone_is_unverified_not_confirmed():
     for unverified in (UNSURE, UNAVAILABLE):
-        item, bucket = az._resolve_entity(entity([0, 0, 10, 10], face_type="anime", label="Anime"), unverified)
-        assert bucket == az.UNSURE_BUCKET
-        assert "detector only" in item["label"]
+        resolved = az._resolve_entity(entity([0, 0, 10, 10], face_type="anime", label="Anime"), unverified)
+        assert resolved.other is None
+        assert "detector only" in resolved.unsure["label"]
 
 
 def test_animal_detector_alone_is_kept_when_confident_and_doubted_when_weak():
-    item, bucket = az._resolve_entity(entity([0, 0, 10, 10], label="Dog", confidence=0.9), UNSURE)
-    assert bucket == az.OTHER
-    assert item["verified_by"] == "detector"
-    assert item["label"] == "Dog"
+    resolved = az._resolve_entity(entity([0, 0, 10, 10], label="Dog", confidence=0.9), UNSURE)
+    assert resolved.unsure is None
+    assert resolved.other["verified_by"] == "detector"
+    assert resolved.other["label"] == "Dog"
 
     weak = entity([0, 0, 10, 10], label="Dog", confidence=0.52)
-    item, bucket = az._resolve_entity(weak, UNSURE)
-    assert bucket == az.UNSURE_BUCKET
-    assert "low confidence" in item["label"]
-    assert az._resolve_entity({**weak, "confidence": None}, UNSURE)[1] == az.UNSURE_BUCKET
+    resolved = az._resolve_entity(weak, UNSURE)
+    assert resolved.other is None
+    assert "low confidence" in resolved.unsure["label"]
+    assert az._resolve_entity({**weak, "confidence": None}, UNSURE).unsure is not None
 
 
 def test_verified_type_overrides_the_detector_type_when_they_disagree():
     drawn = verdict("non_human", "cartoon_or_illustration", "Cartoon / illustration", 0.8)
-    item, _ = az._resolve_entity(entity([0, 0, 10, 10], label="Dog"), drawn)
+    item = az._resolve_entity(entity([0, 0, 10, 10], label="Dog"), drawn).other
     assert item["face_type"] == "cartoon_or_illustration"
     assert item["verified_by"] == "SigLIP2"
 
-    item, _ = az._resolve_entity(entity([0, 0, 10, 10], face_type="anime", label="Anime"), CAT)
+    item = az._resolve_entity(entity([0, 0, 10, 10], face_type="anime", label="Anime"), CAT).other
     assert item["face_type"] == "animal"
 
     anime_ok = verdict("non_human", "anime", "Anime / manga character", 0.9)
-    item, _ = az._resolve_entity(entity([0, 0, 10, 10], face_type="anime", label="Anime"), anime_ok)
+    item = az._resolve_entity(entity([0, 0, 10, 10], face_type="anime", label="Anime"), anime_ok).other
     assert item["label"] == "Anime"
     assert item["verified_by"] == "SigLIP2"
 
     bird = verdict("non_human", "bird", "Bird", 0.9)
-    item, _ = az._resolve_entity(entity([0, 0, 10, 10], face_type="animal", label="Cat"), bird)
+    item = az._resolve_entity(entity([0, 0, 10, 10], face_type="animal", label="Cat"), bird).other
     assert item["label"] == "Cat"
     assert item["verified_by"] == "SigLIP2"
 
@@ -490,19 +489,6 @@ def test_each_face_gets_its_own_body_crop(h):
 # ---- the decision, the summary and the diagnostics ---------------------------------------------------------------------
 
 
-def test_summary_groups_non_human_labels():
-    others = [{"label": "Dog"}, {"label": "Dog"}, {"label": "Bird"}]
-    assert az._summary([{}], others, [{}, {}]) == (
-        "1 real human face(s); 3 non-human face(s): 2 x Dog, 1 x Bird; 2 unverified candidate(s)."
-    )
-
-
-def test_decision_with_a_non_photo_and_no_faces():
-    status, reason = az._decide([], [], [], {"status": "NON_PHOTO", "label": "Diagram", "reason": "x"})
-    assert status == Status.NO_HUMAN_FACE
-    assert "Diagram" in reason
-
-
 def test_metadata_is_reported_in_diagnostics(h):
     h.faces = [detected(BOX_A)]
     meta = DecodedImage(Image.new("RGB", (4, 4)), "image/jpeg", 6000, 4000, True, True)
@@ -521,3 +507,60 @@ def test_metadata_is_reported_in_diagnostics(h):
     assert diagnostics["downscaled_for_analysis"] is True
     assert diagnostics["file_format"] == "image/jpeg"
     assert diagnostics["processing_time_ms"] > 0
+
+
+# ---- progress events and the optional annotated image ---------------------------------------------------------------------
+
+
+def stages(events):
+    return [(event.step_id, event.status) for event in events]
+
+
+def test_a_full_run_reports_every_stage_as_it_starts_and_finishes(h):
+    h.faces = [detected(BOX_A)]
+    events = []
+    h.run(report=events.append)
+    assert stages(events) == [
+        ("validate", "completed"),
+        ("information", "running"),
+        ("information", "completed"),
+        ("detection", "running"),
+        ("detection", "completed"),
+        ("demographics", "running"),
+        ("demographics", "completed"),
+    ]
+    finished = [event for event in events if event.status == "completed" and event.step_id != "validate"]
+    assert all(event.elapsed_ms > 0 for event in finished)
+    assert "1 real human face(s)" in events[4].detail
+    assert events[6].detail == "Age and gender estimated for 1 face(s)."
+
+
+def test_a_blank_image_reports_the_skipped_stages():
+    events = []
+    az.analyze_profile_photo_image(Image.new("RGB", (80, 80), "white"), report=events.append)
+    assert stages(events) == [
+        ("validate", "completed"),
+        ("information", "running"),
+        ("information", "failed"),
+        ("detection", "skipped"),
+        ("demographics", "skipped"),
+    ]
+
+
+def test_stages_that_could_not_run_are_reported_as_failed_or_skipped(h):
+    h.face_models = []
+    h.entity_models = []
+    h.demographics = Demographics()
+    events = []
+    h.run(report=events.append)
+    assert ("detection", "failed") in stages(events)
+    assert events[-1].status == "skipped"
+    assert events[-1].detail == "No age estimate was made."
+
+
+def test_the_annotated_image_can_be_left_out(h):
+    h.faces = [detected(BOX_A)]
+    assert h.run(render_annotation=False)["annotated_image"] is None
+    assert h.run()["annotated_image"].startswith("data:image/jpeg")
+    blank = az.analyze_profile_photo_image(Image.new("RGB", (80, 80), "white"), render_annotation=False)
+    assert blank["annotated_image"] is None

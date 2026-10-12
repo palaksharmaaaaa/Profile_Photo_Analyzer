@@ -1,160 +1,77 @@
-import hmac
+"""Application factory: logging, error handlers, middleware, the static page assets, the routes and the model life cycle."""
+
+import asyncio
 import logging
-import time
-from collections import defaultdict
-from pathlib import Path
-from threading import RLock
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api.routes import router
-from app.core.config import settings
+from app.api.middleware import SecurityMiddleware
+from app.api.routes import INDEX_HTML_PATH, router, v1
+from app.core.config import PROJECT_ROOT, settings
+from app.core.errors import install_error_handlers
+from app.core.logging import configure_logging
+from app.services.jobs import reset_job_manager
+from app.services.model_manager import warm_up
+from app.services.parallel import shutdown as shutdown_inference_pool
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-_rate_limit_lock = RLock()
-_request_records: dict[str, list[float]] = defaultdict(list)
-_concurrency_lock = RLock()
-_active_requests: int = 0
+STATIC_DIR = PROJECT_ROOT / "app" / "static"
 
 
-EXEMPT_PATHS: frozenset[str] = frozenset({"/", "/health", "/docs", "/openapi.json"})
-STATIC_PREFIX = "/static/"  # the page's own stylesheet and script: never authenticated or rate limited
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Warm the models up in the background (the server answers at once; ``/ready`` says when they are), then clean up."""
+    app.state.warm_up = None
+    task: asyncio.Task[None] | None = None
+    if settings.models.warm_up_on_start:
 
+        async def run_warm_up() -> None:
+            app.state.warm_up = await asyncio.to_thread(warm_up)
+            logger.info("Models warmed up: %s", {key: entry["warm_up_ms"] for key, entry in app.state.warm_up.items()})
 
-class ProductionSecurityMiddleware(BaseHTTPMiddleware):
-    """API-key authentication, per-IP rate limiting and a concurrency limit for the analysis endpoint."""
-
-    @staticmethod
-    def _verify_api_key(request: Request) -> JSONResponse | None:
-        """Validate API key from custom header or Bearer authorization."""
-        api_key = request.headers.get(settings.API_KEY_HEADER)
-        if not api_key:
-            auth_hdr = request.headers.get("Authorization", "")
-            if auth_hdr.startswith("Bearer "):
-                api_key = auth_hdr[7:].strip()
-        if not api_key or not settings.API_KEY or not hmac.compare_digest(api_key, settings.API_KEY):
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Unauthorized: Invalid or missing API key."},
-            )
-        return None
-
-    @staticmethod
-    def _resolve_client_ip(request: Request) -> str:
-        """Resolve client IP address respecting trusted reverse proxy headers."""
-        peer_ip = request.client.host if request.client else "unknown"
-        if peer_ip in settings.TRUSTED_PROXIES:
-            forwarded = request.headers.get("X-Forwarded-For")
-            if forwarded:
-                client_part = forwarded.split(",")[0].strip()
-                if client_part:
-                    return client_part
-        return peer_ip
-
-    @staticmethod
-    def _prune_rate_limit_records(now: float) -> None:
-        """Prune expired rate limit entries to prevent unbounded memory growth."""
-        window_start = now - 60.0
-        expired_keys = [ip for ip, recs in _request_records.items() if not recs or recs[-1] <= window_start]
-        for ip in expired_keys:
-            del _request_records[ip]
-        if len(_request_records) > settings.MAX_TRACKED_IPS:
-            excess = len(_request_records) - settings.MAX_TRACKED_IPS
-            for ip in list(_request_records.keys())[:excess]:
-                del _request_records[ip]
-
-    @staticmethod
-    def _check_rate_limit(client_ip: str, now: float) -> tuple[JSONResponse | None, int]:
-        """Enforce sliding-window rate limit per client IP with bounded cleanup."""
-        with _rate_limit_lock:
-            if len(_request_records) > 100:
-                ProductionSecurityMiddleware._prune_rate_limit_records(now)
-            window_start = now - 60.0
-            timestamps = [t for t in _request_records[client_ip] if t > window_start]
-            if len(timestamps) >= settings.RATE_LIMIT_PER_MINUTE:
-                _request_records[client_ip] = timestamps
-                return (
-                    JSONResponse(
-                        status_code=429,
-                        content={"detail": "Too Many Requests: Rate limit exceeded."},
-                        headers={"Retry-After": "60"},
-                    ),
-                    0,
-                )
-            timestamps.append(now)
-            _request_records[client_ip] = timestamps
-            remaining = max(0, settings.RATE_LIMIT_PER_MINUTE - len(timestamps))
-            return None, remaining
-
-    async def dispatch(self, request: Request, call_next):
-        global _active_requests
-
-        path = request.url.path
-        is_exempt = path in EXEMPT_PATHS or path.startswith(STATIC_PREFIX)
-
-        # 1. API key authentication check (if configured)
-        if settings.API_KEY and not is_exempt:
-            auth_error = self._verify_api_key(request)
-            if auth_error:
-                return auth_error
-
-        # 2. Rate limiting (sliding window per client IP)
-        client_ip = self._resolve_client_ip(request)
-        now = time.time()
-        if settings.RATE_LIMIT_ENABLED and not is_exempt:
-            rate_error, remaining = self._check_rate_limit(client_ip, now)
-            if rate_error:
-                return rate_error
-        else:
-            remaining = settings.RATE_LIMIT_PER_MINUTE
-
-        # 3. Concurrency guard
-        if not is_exempt:
-            with _concurrency_lock:
-                if _active_requests >= settings.MAX_CONCURRENT_REQUESTS:
-                    return JSONResponse(
-                        status_code=503,
-                        content={"detail": "Service Unavailable: Server concurrency limit reached."},
-                    )
-                _active_requests += 1
-
-        try:
-            response = await call_next(request)
-            response.headers["X-RateLimit-Limit"] = str(settings.RATE_LIMIT_PER_MINUTE)
-            response.headers["X-RateLimit-Remaining"] = str(remaining)
-            return response
-        finally:
-            if not is_exempt:
-                with _concurrency_lock:
-                    _active_requests = max(0, _active_requests - 1)
+        task = asyncio.create_task(run_warm_up())
+    else:
+        app.state.warm_up = {}
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+        reset_job_manager()
+        shutdown_inference_pool()
 
 
 def create_app() -> FastAPI:
-    """FastAPI application factory."""
-    application = FastAPI(
-        title=settings.APP_TITLE,
-        version=settings.APP_VERSION,
-        description="Automated profile photo quality, facial presence, and suitability analyzer.",
-    )
+    configure_logging(settings.log_level, settings.log_json)
+    if not INDEX_HTML_PATH.is_file():
+        raise RuntimeError(f"The frontend page is missing: {INDEX_HTML_PATH}")
 
-    application.add_middleware(ProductionSecurityMiddleware)
+    application = FastAPI(
+        title=settings.app_title,
+        version=settings.app_version,
+        description="Checks a profile photo for real human faces and estimates age and gender with open models.",
+        lifespan=lifespan,
+    )
+    install_error_handlers(application)
+
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
-        allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
-        allow_methods=["*"],
+        allow_origins=settings.security.cors_origins,
+        allow_credentials=settings.security.cors_allow_credentials,
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
+        expose_headers=["X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining", "Retry-After"],
     )
+    application.add_middleware(SecurityMiddleware)  # added last, so it is the outermost layer
 
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     application.include_router(router)
+    application.include_router(v1)
     return application
 
 

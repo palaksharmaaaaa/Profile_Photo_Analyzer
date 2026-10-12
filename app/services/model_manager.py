@@ -5,11 +5,14 @@ import json
 import logging
 import os
 import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, TypedDict
 
 import cv2
+import numpy as np
 import onnxruntime as ort
 
 from app.core.config import settings
@@ -17,6 +20,7 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 DEFAULT_ORT_THREADS = 4
+WARM_UP_SIDE = 640  # size of the zero image used to warm detectors up
 MANIFEST_NAME = "manifest.json"
 LABEL_BANK_NAME = "label_embeddings.npz"
 
@@ -37,6 +41,28 @@ class ModelSpec:
     license: str
     url: str | None = None
     sha256: str | None = None
+    commercial_use_cleared: bool = True  # False: the weights' licence or training data do not clear commercial use
+
+
+class ModelStatus(TypedDict):
+    """One model as reported by ``/health``."""
+
+    model_name: str
+    file: str
+    role: str
+    license: str
+    ready: bool
+    size_bytes: int
+    enabled: bool
+    commercial_use_cleared: bool
+
+
+class WarmUp(TypedDict):
+    """The outcome of the start-up inference of one model."""
+
+    loaded: bool
+    warm_up_ms: float | None
+    providers: list[str]
 
 
 MODEL_SPECS: dict[str, ModelSpec] = {
@@ -80,6 +106,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         display_name="SCRFD-10G Face Detector (InsightFace)",
         role="primary face candidate detection",
         license="InsightFace pretrained weights: non-commercial research only (see NOTICE.md)",
+        commercial_use_cleared=False,
     ),
     "mivolo": ModelSpec(
         key="mivolo",
@@ -87,6 +114,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         display_name="MiVOLO v2 Age/Gender (face + body transformer)",
         role="age regression and gender classification",
         license="Apache-2.0 per model card; training data only partly disclosed (see NOTICE.md)",
+        commercial_use_cleared=False,
     ),
 }
 
@@ -98,11 +126,11 @@ _sessions: dict[str, ort.InferenceSession] = {}
 
 
 def model_path(key: str) -> Path:
-    return settings.MODELS_DIR / MODEL_SPECS[key].filename
+    return settings.models.directory / MODEL_SPECS[key].filename
 
 
-def _load_manifest() -> dict[str, dict]:
-    path = settings.MODELS_DIR / MANIFEST_NAME
+def _load_manifest() -> dict[str, dict[str, Any]]:
+    path = settings.models.directory / MANIFEST_NAME
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data.get("files", {}) if isinstance(data, dict) else {}
@@ -143,7 +171,7 @@ def _verify_model_loadable(model_path_: Path) -> bool:
 
 def is_valid_model_file(
     path: Path,
-    min_size: int = settings.MIN_MODEL_FILE_SIZE,
+    min_size: int = settings.models.min_file_size,
     expected_name: str | None = None,
 ) -> bool:
     """A model file is valid when it exists, is large enough, and matches its pinned hash (or loads)."""
@@ -180,16 +208,16 @@ def _download_file_stream(download_url: str, temp_path: Path) -> None:
     """Download a binary payload in chunks to a temporary destination."""
     if not download_url.startswith("https://"):
         raise ValueError("Refusing to download a model over a non-HTTPS URL.")
-    req = urllib.request.Request(download_url, headers={"User-Agent": f"ProfilePhotoAnalyzer/{settings.APP_VERSION}"})
+    req = urllib.request.Request(download_url, headers={"User-Agent": f"ProfilePhotoAnalyzer/{settings.app_version}"})
     with (
-        urllib.request.urlopen(req, timeout=settings.DOWNLOAD_TIMEOUT_SECONDS) as resp,  # noqa: S310
+        urllib.request.urlopen(req, timeout=settings.models.download_timeout_seconds) as resp,  # noqa: S310
         open(temp_path, "wb") as f_out,
     ):
         while chunk := resp.read(1024 * 1024):
             f_out.write(chunk)
 
 
-def ensure_model_file(path: Path, download_url: str | None, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
+def ensure_model_file(path: Path, download_url: str | None, min_size: int = settings.models.min_file_size) -> bool:
     """Return True when a verified model file is in place, downloading it atomically if it is missing."""
     if is_valid_model_file(path, min_size):
         return True
@@ -226,9 +254,14 @@ def ensure_model_file(path: Path, download_url: str | None, min_size: int = sett
         return False
 
 
-def check_models_status() -> dict[str, dict]:
+def is_enabled(key: str) -> bool:
+    """False for a model that configuration switched off (SCRFD, whose weights are non-commercial)."""
+    return not (key == "scrfd" and not settings.detection.enable_scrfd)
+
+
+def check_models_status() -> dict[str, ModelStatus]:
     """Report readiness of every model, plus whether the pre-embedded label bank is present."""
-    result: dict[str, dict] = {}
+    result: dict[str, ModelStatus] = {}
     for key, spec in MODEL_SPECS.items():
         path = model_path(key)
         ready = is_valid_model_file(path)
@@ -239,8 +272,10 @@ def check_models_status() -> dict[str, dict]:
             "license": spec.license,
             "ready": ready,
             "size_bytes": path.stat().st_size if ready else 0,
+            "enabled": is_enabled(key),
+            "commercial_use_cleared": spec.commercial_use_cleared,
         }
-    bank = settings.MODELS_DIR / LABEL_BANK_NAME
+    bank = settings.models.directory / LABEL_BANK_NAME
     result["label_bank"] = {
         "model_name": "SigLIP2 pre-computed prompt embeddings",
         "file": LABEL_BANK_NAME,
@@ -248,12 +283,21 @@ def check_models_status() -> dict[str, dict]:
         "license": "derived from Apache-2.0 SigLIP2 text tower",
         "ready": bank.is_file() and bank.stat().st_size > 0,
         "size_bytes": bank.stat().st_size if bank.is_file() else 0,
+        "enabled": True,
+        "commercial_use_cleared": True,
     }
     return result
 
 
+def commercial_use_blockers() -> list[str]:
+    """Display names of the enabled models whose licence or training data do not clear commercial use."""
+    return [
+        spec.display_name for key, spec in MODEL_SPECS.items() if is_enabled(key) and not spec.commercial_use_cleared
+    ]
+
+
 def _providers() -> list[str]:
-    if settings.FORCE_CPU:
+    if settings.models.force_cpu:
         return ["CPUExecutionProvider"]
     available = ort.get_available_providers()
     preferred = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider") if p in available]
@@ -274,9 +318,7 @@ def get_session(key: str) -> ort.InferenceSession | None:
         try:
             options = ort.SessionOptions()
             # Measured: onnxruntime's "use every core" default was ~4x slower than 4 threads on a 14-core CPU.
-            options.intra_op_num_threads = settings.ORT_INTRA_OP_THREADS or min(
-                DEFAULT_ORT_THREADS, os.cpu_count() or 1
-            )
+            options.intra_op_num_threads = settings.models.ort_threads or min(DEFAULT_ORT_THREADS, os.cpu_count() or 1)
             session = ort.InferenceSession(str(path), sess_options=options, providers=_providers())
         except Exception as exc:
             logger.warning("Failed to initialise %s session: %s", spec.display_name, exc)
@@ -299,8 +341,8 @@ def get_yunet_detector(width: int = 640, height: int = 640) -> cv2.FaceDetectorY
                     str(path),
                     "",
                     (width, height),
-                    score_threshold=settings.HUMAN_FACE_CONF_THRESHOLD,
-                    nms_threshold=settings.FACE_NMS_IOU,
+                    score_threshold=settings.detection.yunet_threshold,
+                    nms_threshold=settings.detection.nms_iou,
                 )
                 _yunet_size = (width, height)
             elif _yunet_size != (width, height):
@@ -310,6 +352,55 @@ def get_yunet_detector(width: int = 640, height: int = 640) -> cv2.FaceDetectorY
         except Exception as exc:
             logger.warning("Failed to initialise YuNet detector: %s", exc)
             return None
+
+
+def _dummy_input(session: ort.InferenceSession) -> dict[str, np.ndarray]:
+    """Zero inputs for every input of a session (a dynamic batch becomes 1, other dynamic sizes 640)."""
+    feeds: dict[str, np.ndarray] = {}
+    for model_input in session.get_inputs():
+        shape = [
+            dim if isinstance(dim, int) and dim > 0 else (1 if axis == 0 else WARM_UP_SIDE)
+            for axis, dim in enumerate(model_input.shape)
+        ]
+        dtype = np.int64 if "int64" in model_input.type else np.float32
+        feeds[model_input.name] = np.zeros(shape, dtype=dtype)
+    return feeds
+
+
+def warm_up() -> dict[str, WarmUp]:
+    """
+    Load every enabled model and run one inference on zeros, so the first real request does not pay for it.
+
+    Returns, per model, whether it loaded, how long its first inference took and which execution providers it uses.
+    """
+    report: dict[str, WarmUp] = {}
+    for key in MODEL_SPECS:
+        if not is_enabled(key) or key == "yunet":
+            continue
+        session = get_session(key)
+        if session is None:
+            report[key] = {"loaded": False, "warm_up_ms": None, "providers": []}
+            continue
+        started = time.perf_counter()
+        try:
+            session.run(None, _dummy_input(session))
+            elapsed: float | None = round((time.perf_counter() - started) * 1000, 1)
+        except Exception as exc:
+            logger.warning("Warm-up inference of %s failed: %s", key, exc)
+            elapsed = None
+        report[key] = {"loaded": elapsed is not None, "warm_up_ms": elapsed, "providers": session.get_providers()}
+
+    started = time.perf_counter()
+    with yunet_lock:
+        detector = get_yunet_detector(WARM_UP_SIDE, WARM_UP_SIDE)
+        if detector is not None:
+            detector.detect(np.zeros((WARM_UP_SIDE, WARM_UP_SIDE, 3), dtype=np.uint8))
+    report["yunet"] = {
+        "loaded": detector is not None,
+        "warm_up_ms": round((time.perf_counter() - started) * 1000, 1) if detector is not None else None,
+        "providers": ["OpenCV DNN"] if detector is not None else [],
+    }
+    return report
 
 
 yunet_lock = threading.Lock()  # the YuNet detector holds mutable input-size state, so detection is serialised

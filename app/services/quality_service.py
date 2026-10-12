@@ -1,17 +1,16 @@
-from typing import Any
-
 import cv2
 import numpy as np
 
 from app.core.config import settings
 from app.services.image_utils import clamp_box
+from app.services.types import Box, ImageInfoItem, QualityItem
 
 INFO_ANALYSIS_MAX_SIDE = 512  # the information check runs on a copy no larger than this
 SHARPNESS_REFERENCE_SIZE = 112  # faces are resized to this before measuring sharpness (resolution independent)
 DEMOGRAPHICS_MAX_YAW_RATIO = 0.60  # beyond this head turn, age and gender are not estimated at all
 
 
-def check_image_information(image_bgr: np.ndarray) -> dict[str, Any]:
+def check_image_information(image_bgr: np.ndarray) -> ImageInfoItem:
     """Decide whether the image carries visual information or is blank / a solid or uniform fill."""
     if image_bgr is None or image_bgr.size == 0:
         return {
@@ -29,16 +28,16 @@ def check_image_information(image_bgr: np.ndarray) -> dict[str, Any]:
         gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
     std_val = float(np.std(gray))
-    counts = np.bincount(gray.ravel(), minlength=256).astype(np.float64)
+    counts = np.bincount(gray.ravel().astype(np.int64), minlength=256).astype(np.float64)
     probs = counts[counts > 0] / counts.sum()
     entropy = float(-np.sum(probs * np.log2(probs))) if len(probs) else 0.0
     lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
     unique_vals = int(np.count_nonzero(counts))
 
     is_blank = (
-        std_val < settings.MIN_IMAGE_STD_DEV
-        or entropy < settings.MIN_IMAGE_ENTROPY
-        or lap_var < settings.MIN_LAPLACIAN_VAR
+        std_val < settings.information.min_std_dev
+        or entropy < settings.information.min_entropy
+        or lap_var < settings.information.min_laplacian_var
         or unique_vals < 5
     )
     reason = (
@@ -56,8 +55,8 @@ def check_image_information(image_bgr: np.ndarray) -> dict[str, Any]:
 
 
 def _check_edge_touch(x1: int, y1: int, x2: int, y2: int, width: int, height: int) -> bool:
-    margin_x = max(settings.MIN_EDGE_MARGIN_PIXELS, int(width * settings.EDGE_MARGIN_RATIO))
-    margin_y = max(settings.MIN_EDGE_MARGIN_PIXELS, int(height * settings.EDGE_MARGIN_RATIO))
+    margin_x = max(settings.quality.min_edge_margin_pixels, int(width * settings.quality.edge_margin_ratio))
+    margin_y = max(settings.quality.min_edge_margin_pixels, int(height * settings.quality.edge_margin_ratio))
     return x1 <= margin_x or y1 <= margin_y or x2 >= width - margin_x or y2 >= height - margin_y
 
 
@@ -106,27 +105,27 @@ def _resolve_quality_verdict(
     """Determine status and reasoning based on prioritised quality metrics."""
     if touches_edge:
         return "PARTIAL_OR_CROPPED", "The face box is too close to an image edge."
-    if brightness < settings.MIN_BRIGHTNESS:
+    if brightness < settings.quality.min_brightness:
         return "UNCERTAIN", "The face appears significantly underexposed or in poor lighting."
-    if brightness > settings.MAX_BRIGHTNESS:
+    if brightness > settings.quality.max_brightness:
         return "UNCERTAIN", "The face appears overexposed or washed out."
-    if face_area_ratio < settings.MIN_FACE_AREA_RATIO:
+    if face_area_ratio < settings.quality.min_face_area_ratio:
         return "UNCERTAIN", "The face is too small in the frame for a profile photo."
-    if face_area_ratio > settings.MAX_FACE_AREA_RATIO:
+    if face_area_ratio > settings.quality.max_face_area_ratio:
         return "UNCERTAIN", "The face fills almost the whole frame; the head may be cropped."
-    if sharpness < settings.MIN_SHARPNESS_SCORE:
+    if sharpness < settings.quality.min_sharpness:
         return (
             "UNCERTAIN",
-            f"The face image may be blurry (sharpness score {sharpness:.1f} < {settings.MIN_SHARPNESS_SCORE:.1f}).",
+            f"The face image may be blurry (sharpness score {sharpness:.1f} < {settings.quality.min_sharpness:.1f}).",
         )
     if not landmarks_available or not landmarks_inside:
         return "UNCERTAIN", "Facial landmarks could not be verified reliably."
-    if yaw_ratio is not None and abs(yaw_ratio) > settings.MAX_YAW_RATIO:
+    if yaw_ratio is not None and abs(yaw_ratio) > settings.quality.max_yaw_ratio:
         return "UNCERTAIN", "The head is turned away from the camera; a frontal photo is expected."
     return "LIKELY_COMPLETE", "The face is well-framed, sharp, frontal, and all key facial landmarks are visible."
 
 
-def assess_face_quality(image_bgr: np.ndarray, face_box: list, landmarks: np.ndarray | None = None) -> dict[str, Any]:
+def assess_face_quality(image_bgr: np.ndarray, face_box: Box, landmarks: np.ndarray | None = None) -> QualityItem:
     """Evaluate framing, exposure, sharpness (resolution-normalised), pose and landmarks for one face."""
     height, width = image_bgr.shape[:2]
     x1, y1, x2, y2 = clamp_box(face_box, width, height)
@@ -167,8 +166,8 @@ def assess_face_quality(image_bgr: np.ndarray, face_box: list, landmarks: np.nda
     )
 
     caveat = None
-    if min_side < settings.MIN_FACE_SIDE_PX:
-        caveat = f"The face is only {min_side}px wide; at least {settings.MIN_FACE_SIDE_PX}px is needed."
+    if min_side < settings.quality.min_face_side_px:
+        caveat = f"The face is only {min_side}px wide; at least {settings.quality.min_face_side_px}px is needed."
     elif yaw_ratio is not None and abs(yaw_ratio) > DEMOGRAPHICS_MAX_YAW_RATIO:
         caveat = "The head is turned too far from the camera for reliable age or gender estimation."
 
