@@ -21,7 +21,9 @@ def write_manifest(models_dir, name: str, data: bytes):
 def test_registry_declares_every_model_with_licence_and_role():
     assert set(mm.MODEL_SPECS) == {"yunet", "anime_face", "yolox", "siglip_vision", "scrfd", "mivolo"}
     for spec in mm.MODEL_SPECS.values():
-        assert spec.license and spec.role and spec.filename.endswith(".onnx")
+        assert spec.license
+        assert spec.role
+        assert spec.filename.endswith(".onnx")
 
 
 def test_downloadable_models_are_hash_pinned_and_built_models_are_not_downloadable():

@@ -143,7 +143,8 @@ def test_blank_image_stops_before_any_model_runs():
     classify.assert_not_called()
     detect.assert_not_called()
     AnalysisResponse.model_validate(result)
-    assert result["status"] == Status.NO_INFORMATION and result["accepted"] is False
+    assert result["status"] == Status.NO_INFORMATION
+    assert result["accepted"] is False
     assert result["image_info"]["has_information"] is False
     assert result["real_human_face_count"] == result["other_face_count"] == result["unsure_face_count"] == 0
     assert result["image_type"]["status"] == "NOT_CHECKED"
@@ -157,20 +158,27 @@ def test_blank_image_stops_before_any_model_runs():
 def test_single_real_human_passes_with_full_demographics(h):
     h.faces = [detected(BOX_A)]
     result = h.run()
-    assert result["status"] == Status.PASSED and result["accepted"] is True
+    assert result["status"] == Status.PASSED
+    assert result["accepted"] is True
     assert (result["real_human_face_count"], result["other_face_count"], result["unsure_face_count"]) == (1, 0, 0)
 
     face = result["human_faces"][0]
-    assert face["face_id"] == 1 and face["verification_confidence"] == 0.9
-    assert face["gender"] == "Female" and face["age_group"] == "33 to 36" and face["age_status"] == "Estimated"
-    assert face["age_range"] == [26.0, 42.0] and face["p_under_18"] == 0.0 and face["possible_minor"] is False
+    assert face["face_id"] == 1
+    assert face["verification_confidence"] == 0.9
+    assert face["gender"] == "Female"
+    assert face["age_group"] == "33 to 36"
+    assert face["age_status"] == "Estimated"
+    assert face["age_range"] == [26.0, 42.0]
+    assert face["p_under_18"] == 0.0
+    assert face["possible_minor"] is False
     assert face["quality"]["status"] == "LIKELY_COMPLETE"
     assert face["box_percent"] == [33.33, 33.33, 66.67, 66.67]
 
     assert result["summary"] == "1 real human face(s); 0 non-human faces; 0 unverified candidate(s)."
     assert [s["status"] for s in result["pipeline_steps"]] == ["completed"] * 4
     models = result["diagnostics"]["models_executed"]
-    assert models[0] == az.MODEL_INFO_CHECK and {"SigLIP2 test", "Face detector test", "Age model test"} <= set(models)
+    assert models[0] == az.MODEL_INFO_CHECK
+    assert {"SigLIP2 test", "Face detector test", "Age model test"} <= set(models)
     assert result["original_image"].startswith("data:image/jpeg")
     assert result["annotated_image"].startswith("data:image/jpeg")
 
@@ -181,7 +189,8 @@ def test_demographics_run_even_when_the_image_type_is_uncertain(h):
     h.image_type = image_type("NEEDS_REVIEW")
     result = h.run()
     assert result["human_faces"][0]["age_status"] == "Estimated"
-    assert result["status"] == Status.REVIEW_REQUIRED and result["accepted"] is False
+    assert result["status"] == Status.REVIEW_REQUIRED
+    assert result["accepted"] is False
 
 
 def test_non_photo_image_with_a_verified_human_needs_review(h):
@@ -221,7 +230,8 @@ def test_possible_minor_requires_age_verification(h):
     h.faces = [detected(BOX_A)]
     h.demographics = adult(age=16.0, p_under_18=0.7)
     result = h.run()
-    assert result["status"] == Status.POSSIBLE_MINOR and result["accepted"] is False
+    assert result["status"] == Status.POSSIBLE_MINOR
+    assert result["accepted"] is False
     assert "70%" in result["reason"]
     assert result["human_faces"][0]["possible_minor"] is True
 
@@ -243,7 +253,8 @@ def test_multiple_real_humans_each_get_demographics_in_reading_order(h):
     h.faces = [detected(BOX_C), detected(BOX_B), detected(BOX_A)]
     result = h.run()
     assert result["real_human_face_count"] == 3
-    assert result["status"] == Status.MULTIPLE_HUMAN_FACES and "found 3" in result["reason"]
+    assert result["status"] == Status.MULTIPLE_HUMAN_FACES
+    assert "found 3" in result["reason"]
     assert [f["box_xyxy"] for f in result["human_faces"]] == [BOX_B, BOX_A, BOX_C]  # top to bottom, left to right
     assert [f["face_id"] for f in result["human_faces"]] == [1, 2, 3]
     assert all(f["age_status"] == "Estimated" for f in result["human_faces"])
@@ -255,9 +266,12 @@ def test_non_human_faces_are_counted_separately_and_never_aged(h):
     result = h.run()
     assert (result["real_human_face_count"], result["other_face_count"]) == (1, 1)
     other = result["other_faces"][0]
-    assert other["face_type"] == "animal" and other["verified_by"] == "SigLIP2"
-    assert result["status"] == Status.NON_HUMAN_FACE_PRESENT and "Animal face" in result["reason"]
-    assert len(result["human_faces"]) == 1 and len(h.demographics_calls) == 1  # the animal was never aged
+    assert other["face_type"] == "animal"
+    assert other["verified_by"] == "SigLIP2"
+    assert result["status"] == Status.NON_HUMAN_FACE_PRESENT
+    assert "Animal face" in result["reason"]
+    assert len(result["human_faces"]) == 1
+    assert len(h.demographics_calls) == 1  # the animal was never aged
 
 
 def test_animals_without_a_face_candidate_are_found_by_the_entity_detector(h):
@@ -266,8 +280,10 @@ def test_animals_without_a_face_candidate_are_found_by_the_entity_detector(h):
     result = h.run()
     assert result["real_human_face_count"] == 0
     assert result["other_faces"][0]["label"] == "Dog"
-    assert result["status"] == Status.ONLY_NON_HUMAN_FACES and "No real human face was detected" in result["reason"]
-    assert result["human_faces"] == [] and result["pipeline_steps"][3]["status"] == "skipped"
+    assert result["status"] == Status.ONLY_NON_HUMAN_FACES
+    assert "No real human face was detected" in result["reason"]
+    assert result["human_faces"] == []
+    assert result["pipeline_steps"][3]["status"] == "skipped"
 
 
 def test_person_riding_a_horse_keeps_both(h):
@@ -285,7 +301,8 @@ def test_face_candidate_that_is_really_an_animal_merges_with_the_animal_box(h):
     h.verdicts = {(220, 220, 320, 320): CAT, (100, 100, 500, 500): CAT}
     result = h.run()
     assert result["other_face_count"] == 1
-    assert result["other_faces"][0]["label"] == "Cat" and result["other_faces"][0]["source"] == "YOLOX-S (COCO)"
+    assert result["other_faces"][0]["label"] == "Cat"
+    assert result["other_faces"][0]["source"] == "YOLOX-S (COCO)"
 
 
 def test_duplicate_animal_reports_collapse_preferring_yolox(h):
@@ -297,7 +314,8 @@ def test_duplicate_animal_reports_collapse_preferring_yolox(h):
     ]
     h.verdicts = {(100, 100, 500, 500): CAT, (200, 200, 300, 300): CAT}
     result = h.run()
-    assert result["other_face_count"] == 1 and result["other_faces"][0]["label"] == "Dog"
+    assert result["other_face_count"] == 1
+    assert result["other_faces"][0]["label"] == "Dog"
 
 
 def test_overlapping_reports_of_the_same_animal_collapse_by_overlap(h):
@@ -346,12 +364,14 @@ def test_false_face_candidates_are_dropped_and_counted(h):
     h.verdicts = {tuple(BOX_C): NOT_FACE}
     result = h.run()
     assert (result["real_human_face_count"], result["other_face_count"]) == (1, 0)
-    assert result["diagnostics"]["rejected_candidate_count"] == 1 and result["accepted"] is True
+    assert result["diagnostics"]["rejected_candidate_count"] == 1
+    assert result["accepted"] is True
 
 
 def test_no_faces_at_all(h):
     result = h.run()
-    assert result["status"] == Status.NO_HUMAN_FACE and result["reason"] == "No human face was detected."
+    assert result["status"] == Status.NO_HUMAN_FACE
+    assert result["reason"] == "No human face was detected."
     assert result["legend"] == "No face was located in this image."
 
     h.image_type = NON_PHOTO
@@ -391,7 +411,8 @@ def test_anime_detector_only_hit_lands_in_the_unsure_list(h):
     h.verdicts = {(100, 100, 200, 200): UNSURE}
     result = h.run()
     assert (result["other_face_count"], result["unsure_face_count"]) == (0, 1)
-    assert "detector only" in result["unsure_faces"][0]["label"] and result["status"] == Status.REVIEW_REQUIRED
+    assert "detector only" in result["unsure_faces"][0]["label"]
+    assert result["status"] == Status.REVIEW_REQUIRED
 
 
 # ---- how a detector entity is resolved ---------------------------------------------------------------------------
@@ -405,34 +426,41 @@ def test_detector_hit_on_a_real_face_or_non_face_is_discarded(kind):
 def test_anime_detector_alone_is_unverified_not_confirmed():
     for unverified in (UNSURE, UNAVAILABLE):
         item, bucket = az._resolve_entity(entity([0, 0, 10, 10], face_type="anime", label="Anime"), unverified)
-        assert bucket == az.UNSURE_BUCKET and "detector only" in item["label"]
+        assert bucket == az.UNSURE_BUCKET
+        assert "detector only" in item["label"]
 
 
 def test_animal_detector_alone_is_kept_when_confident_and_doubted_when_weak():
     item, bucket = az._resolve_entity(entity([0, 0, 10, 10], label="Dog", confidence=0.9), UNSURE)
-    assert bucket == az.OTHER and item["verified_by"] == "detector" and item["label"] == "Dog"
+    assert bucket == az.OTHER
+    assert item["verified_by"] == "detector"
+    assert item["label"] == "Dog"
 
     weak = entity([0, 0, 10, 10], label="Dog", confidence=0.52)
     item, bucket = az._resolve_entity(weak, UNSURE)
-    assert bucket == az.UNSURE_BUCKET and "low confidence" in item["label"]
+    assert bucket == az.UNSURE_BUCKET
+    assert "low confidence" in item["label"]
     assert az._resolve_entity({**weak, "confidence": None}, UNSURE)[1] == az.UNSURE_BUCKET
 
 
 def test_verified_type_overrides_the_detector_type_when_they_disagree():
     drawn = verdict("non_human", "cartoon_or_illustration", "Cartoon / illustration", 0.8)
     item, _ = az._resolve_entity(entity([0, 0, 10, 10], label="Dog"), drawn)
-    assert item["face_type"] == "cartoon_or_illustration" and item["verified_by"] == "SigLIP2"
+    assert item["face_type"] == "cartoon_or_illustration"
+    assert item["verified_by"] == "SigLIP2"
 
     item, _ = az._resolve_entity(entity([0, 0, 10, 10], face_type="anime", label="Anime"), CAT)
     assert item["face_type"] == "animal"
 
     anime_ok = verdict("non_human", "anime", "Anime / manga character", 0.9)
     item, _ = az._resolve_entity(entity([0, 0, 10, 10], face_type="anime", label="Anime"), anime_ok)
-    assert item["label"] == "Anime" and item["verified_by"] == "SigLIP2"
+    assert item["label"] == "Anime"
+    assert item["verified_by"] == "SigLIP2"
 
     bird = verdict("non_human", "bird", "Bird", 0.9)
     item, _ = az._resolve_entity(entity([0, 0, 10, 10], face_type="animal", label="Cat"), bird)
-    assert item["label"] == "Cat" and item["verified_by"] == "SigLIP2"
+    assert item["label"] == "Cat"
+    assert item["verified_by"] == "SigLIP2"
 
 
 # ---- body crops for the age model -----------------------------------------------------------------------------------
@@ -471,7 +499,8 @@ def test_summary_groups_non_human_labels():
 
 def test_decision_with_a_non_photo_and_no_faces():
     status, reason = az._decide([], [], [], {"status": "NON_PHOTO", "label": "Diagram", "reason": "x"})
-    assert status == Status.NO_HUMAN_FACE and "Diagram" in reason
+    assert status == Status.NO_HUMAN_FACE
+    assert "Diagram" in reason
 
 
 def test_metadata_is_reported_in_diagnostics(h):
@@ -488,5 +517,7 @@ def test_metadata_is_reported_in_diagnostics(h):
         result = az.analyze_profile_photo_image(pil, "x.jpg", "image/jpeg", meta)
     diagnostics = result["diagnostics"]
     assert (diagnostics["original_width"], diagnostics["original_height"]) == (6000, 4000)
-    assert diagnostics["exif_orientation_applied"] is True and diagnostics["downscaled_for_analysis"] is True
-    assert diagnostics["file_format"] == "image/jpeg" and diagnostics["processing_time_ms"] > 0
+    assert diagnostics["exif_orientation_applied"] is True
+    assert diagnostics["downscaled_for_analysis"] is True
+    assert diagnostics["file_format"] == "image/jpeg"
+    assert diagnostics["processing_time_ms"] > 0

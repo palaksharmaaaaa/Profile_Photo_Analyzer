@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     CORS_ALLOW_CREDENTIALS: bool = False
 
     @model_validator(mode="after")
-    def require_api_key_in_production(self) -> Settings:
+    def check_api_key_is_set_in_production(self) -> Settings:
         if self.ENVIRONMENT.lower() == "production" and self.REQUIRE_API_KEY_IN_PRODUCTION and not self.API_KEY:
             raise ValueError(
                 "Production mode (ENVIRONMENT='production') requires PPA_API_KEY to be configured "

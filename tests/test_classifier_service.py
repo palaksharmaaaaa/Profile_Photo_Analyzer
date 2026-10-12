@@ -68,8 +68,10 @@ def test_image_type_unavailable_is_reported_as_uncertain_not_invented():
     with patch.object(cs.semantic_service, "classify_images", return_value=None):
         out = cs.classify_image_type(IMG)
     assert out["status"] == "UNCERTAIN"
-    assert out["model"] is None and out["predictions"] == []
-    assert out["photo_share"] is None and out["synthetic_share"] is None
+    assert out["model"] is None
+    assert out["predictions"] == []
+    assert out["photo_share"] is None
+    assert out["synthetic_share"] is None
 
 
 # ---- crop verdicts ------------------------------------------------------------------------------
@@ -98,7 +100,8 @@ def test_verdict_human_requires_probability_and_margin():
 
 def test_verdict_non_human_only_when_human_share_is_low():
     out = verdict(face_probs(animal=0.8, real_human=0.05, bird=0.15))
-    assert out["verdict"] == cs.VERDICT_NON_HUMAN and out["face_type"] == "animal"
+    assert out["verdict"] == cs.VERDICT_NON_HUMAN
+    assert out["face_type"] == "animal"
     assert verdict(face_probs(painting=0.5, real_human=0.4, cartoon=0.1))["verdict"] == cs.VERDICT_UNSURE
 
 
@@ -139,7 +142,8 @@ def yolox_output(cell, cls_id, obj=0.9, cls_score=0.95, wh=np.log(10.0)):
 
 def test_yolox_grid_shape():
     grid, stride = cs._yolox_grid()
-    assert grid.shape == (8400, 2) and stride.shape == (8400, 1)
+    assert grid.shape == (8400, 2)
+    assert stride.shape == (8400, 1)
     assert set(np.unique(stride)) == {8.0, 16.0, 32.0}
 
 
@@ -147,7 +151,8 @@ def test_decode_yolox_finds_animals_in_original_coordinates():
     cell = 10 * 80 + 10
     out = cs._decode_yolox(yolox_output(cell, 16), ratio=0.5, width=1000, height=1000, threshold=0.45)
     assert len(out) == 1
-    assert out[0]["label"] == "Dog" and out[0]["face_type"] == "animal"
+    assert out[0]["label"] == "Dog"
+    assert out[0]["face_type"] == "animal"
     assert out[0]["source"] == cs.MODEL_NAME_YOLOX
     assert out[0]["box_xyxy"] == [560, 560, 720, 720]  # (320 +- 40) / 0.5
     assert out[0]["confidence"] == pytest.approx(0.855, abs=0.01)
@@ -198,7 +203,8 @@ def test_letterbox_preserves_aspect_and_pads_grey():
     canvas, ratio = cs._letterbox(image, to_rgb=False)
     assert canvas.shape == (640, 640, 3)
     assert ratio == pytest.approx(3.2)
-    assert canvas[0, 0, 0] == 255 and canvas[639, 639, 0] == cs.LETTERBOX_PAD
+    assert canvas[0, 0, 0] == 255
+    assert canvas[639, 639, 0] == cs.LETTERBOX_PAD
     rgb_canvas, _ = cs._letterbox(
         np.dstack([np.zeros((10, 10)), np.zeros((10, 10)), np.full((10, 10), 200)]).astype(np.uint8), True
     )
@@ -208,7 +214,8 @@ def test_letterbox_preserves_aspect_and_pads_grey():
 def test_decode_yolox_can_return_people_for_body_crops():
     cell = 10 * 80 + 10
     out = cs._decode_yolox(yolox_output(cell, 0), 1.0, 640, 640, 0.5, cs.PERSON_CLASS)
-    assert len(out) == 1 and out[0]["face_type"] == "person"
+    assert len(out) == 1
+    assert out[0]["face_type"] == "person"
     assert out[0]["box_xyxy"] == [280, 280, 360, 360]
     assert cs._decode_yolox(yolox_output(cell, 16), 1.0, 640, 640, 0.5, cs.PERSON_CLASS) == []  # a dog is not a person
 
@@ -225,7 +232,8 @@ def test_detect_entities_runs_all_models_and_reports_them():
     with patch.object(cs, "get_session", side_effect=sessions.get):
         entities, persons, executed = cs.detect_entities_and_persons(np.zeros((640, 640, 3), np.uint8))
     assert {e["face_type"] for e in entities} == {"animal", "anime"}
-    assert len(persons) == 1 and persons[0][3] - persons[0][1] > 100
+    assert len(persons) == 1
+    assert persons[0][3] - persons[0][1] > 100
     assert executed == [cs.MODEL_NAME_YOLOX, cs.MODEL_NAME_ANIME_FACE]
 
 
@@ -236,7 +244,9 @@ def test_detect_entities_reports_only_models_that_really_ran():
     sessions = {"yolox": FakeSession(explode), "anime_face": None}
     with patch.object(cs, "get_session", side_effect=sessions.get):
         entities, persons, executed = cs.detect_entities_and_persons(np.zeros((64, 64, 3), np.uint8))
-    assert entities == [] and persons == [] and executed == []
+    assert entities == []
+    assert persons == []
+    assert executed == []
 
     sessions = {"yolox": None, "anime_face": FakeSession(explode)}
     with patch.object(cs, "get_session", side_effect=sessions.get):

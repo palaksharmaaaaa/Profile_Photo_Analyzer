@@ -136,7 +136,7 @@ def _scrfd_pass(image_bgr: np.ndarray) -> list[DetectedFace]:
 def _yunet_pass(image_bgr: np.ndarray, scale: float) -> list[DetectedFace]:
     """One YuNet pass on the image resized by ``scale``; results are mapped back to image coordinates."""
     height, width = image_bgr.shape[:2]
-    work = image_bgr if scale == 1.0 else cv2.resize(image_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    work = cv2.resize(image_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC) if scale > 1.0 else image_bgr
     work_h, work_w = work.shape[:2]
 
     with yunet_lock:

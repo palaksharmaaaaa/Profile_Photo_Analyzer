@@ -109,16 +109,18 @@ def test_decode_uses_jpeg_draft_for_big_jpegs(monkeypatch):
 
 def test_decode_rejects_oversized_dimension(monkeypatch):
     monkeypatch.setattr(settings, "MAX_IMAGE_DIMENSION", 50)
+    too_wide = encode(Image.new("RGB", (60, 10), "grey"), "PNG")
     with pytest.raises(InvalidImageError, match="dimension"):
-        decode_image_bytes(encode(Image.new("RGB", (60, 10), "grey"), "PNG"))
+        decode_image_bytes(too_wide)
 
 
 @pytest.mark.parametrize("pixels", [1500, 50_000])
 def test_decode_rejects_decompression_bomb(monkeypatch, pixels):
     monkeypatch.setattr(settings, "MAX_IMAGE_PIXELS", 1000)
     side = int(pixels**0.5)
+    bomb = encode(Image.new("RGB", (side, side), "grey"), "PNG")
     with pytest.raises(InvalidImageError, match="decompression"):
-        decode_image_bytes(encode(Image.new("RGB", (side, side), "grey"), "PNG"))
+        decode_image_bytes(bomb)
 
 
 def test_decode_rejects_unknown_format():
@@ -198,8 +200,12 @@ def test_box_iou_and_center():
 def test_letterbox_top_left_keeps_aspect_and_reports_the_scale():
     image = np.full((100, 200, 3), 255, dtype=np.uint8)
     canvas, scale = letterbox_top_left(image, 400, pad_value=114)
-    assert canvas.shape == (400, 400, 3) and scale == 2.0
-    assert canvas[0, 0, 0] == 255 and canvas[199, 399, 0] == 255  # the scaled image fills the top 200 rows
-    assert canvas[200, 0, 0] == 114 and canvas[399, 399, 0] == 114  # grey padding below
+    assert canvas.shape == (400, 400, 3)
+    assert scale == 2.0
+    assert canvas[0, 0, 0] == 255
+    assert canvas[199, 399, 0] == 255  # the scaled image fills the top 200 rows
+    assert canvas[200, 0, 0] == 114
+    assert canvas[399, 399, 0] == 114  # grey padding below
     tiny, tiny_scale = letterbox_top_left(np.zeros((1, 1, 3), np.uint8), 8)
-    assert tiny.shape == (8, 8, 3) and tiny_scale == 8.0
+    assert tiny.shape == (8, 8, 3)
+    assert tiny_scale == 8.0

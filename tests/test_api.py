@@ -251,8 +251,10 @@ def test_page_assets_are_served_and_never_need_the_api_key():
     with patch.object(settings, "API_KEY", "secret-test-token"):
         assert client.get("/").status_code == 200
         css, script = client.get("/static/analyzer.css"), client.get("/static/analyzer.js")
-    assert css.status_code == 200 and "text/css" in css.headers["content-type"]
-    assert script.status_code == 200 and "analyze-profile-photo" in script.text
+    assert css.status_code == 200
+    assert "text/css" in css.headers["content-type"]
+    assert script.status_code == 200
+    assert "analyze-profile-photo" in script.text
 
 
 def test_openapi_documents_the_response_contract():

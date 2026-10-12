@@ -86,7 +86,7 @@ def analyze_profile_photo(file: Annotated[UploadFile, File()]):
     try:
         decoded = decode_image_bytes(contents)
     except InvalidImageError as exc:
-        logger.warning("Rejected upload %r: %s", filename, exc.reason)
+        logger.warning("Rejected upload: %s", exc.reason)
         return _error(status.HTTP_400_BAD_REQUEST, exc.reason)
 
     try:

@@ -63,8 +63,9 @@ def test_scrfd_decode_box_and_landmarks():
 
 def test_scrfd_decode_threshold_and_bad_shapes():
     assert fs._decode_scrfd(scrfd_outputs(score=0.3), 640, 0.4) == []
+    wrong_size = scrfd_outputs(size=320)
     with pytest.raises(ValueError, match="Unexpected SCRFD output size"):
-        fs._decode_scrfd(scrfd_outputs(size=320), 640, 0.4)
+        fs._decode_scrfd(wrong_size, 640, 0.4)
 
 
 @pytest.mark.parametrize(
@@ -83,7 +84,8 @@ def test_scrfd_pass_maps_boxes_back_to_the_image():
     with patch.object(fs, "get_session", return_value=scrfd_session()):
         (face,) = fs._scrfd_pass(image)
     assert face.bbox == [64, 64, 104, 104]
-    assert face.source == fs.MODEL_NAME_SCRFD and face.det_score == pytest.approx(0.9)
+    assert face.source == fs.MODEL_NAME_SCRFD
+    assert face.det_score == pytest.approx(0.9)
     assert face.kps.shape == (5, 2)
 
 
@@ -133,7 +135,8 @@ def test_detect_faces_union_raises_recall_when_one_detector_misses():
     p_session, p_yunet = both_detectors(miss, yunet)
     with p_session, p_yunet:
         faces, ran = fs.detect_faces(image)
-    assert [f.source for f in faces] == [fs.MODEL_NAME_YUNET] and len(ran) == 2
+    assert [f.source for f in faces] == [fs.MODEL_NAME_YUNET]
+    assert len(ran) == 2
 
 
 def test_detect_faces_scrfd_adds_faces_that_yunet_misses():
@@ -141,7 +144,8 @@ def test_detect_faces_scrfd_adds_faces_that_yunet_misses():
     p_session, p_yunet = both_detectors(scrfd_session(), FakeDetector(None, 640))
     with p_session, p_yunet:
         faces, ran = fs.detect_faces(image)
-    assert [f.source for f in faces] == [fs.MODEL_NAME_SCRFD] and faces[0].bbox == [64, 64, 104, 104]
+    assert [f.source for f in faces] == [fs.MODEL_NAME_SCRFD]
+    assert faces[0].bbox == [64, 64, 104, 104]
 
 
 def test_detect_faces_small_image_uses_second_upscaled_yunet_pass(monkeypatch):
@@ -149,7 +153,9 @@ def test_detect_faces_small_image_uses_second_upscaled_yunet_pass(monkeypatch):
     p_session, p_yunet = both_detectors(None, yunet)
     with p_session, p_yunet as get:
         faces, ran = fs.detect_faces(IMG)
-    assert ran == [fs.MODEL_NAME_YUNET] and len(faces) == 1 and faces[0].bbox == [100, 100, 180, 180]
+    assert ran == [fs.MODEL_NAME_YUNET]
+    assert len(faces) == 1
+    assert faces[0].bbox == [100, 100, 180, 180]
     assert get.call_count == 2  # 1x and 2x
 
     monkeypatch.setattr(settings, "SMALL_IMAGE_UPSCALE_SIDE", 100)
@@ -166,7 +172,8 @@ def test_detect_faces_yunet_skips_slivers_and_handles_no_faces():
     p_session, p_yunet = both_detectors(None, FakeDetector(None, 300))
     with p_session, p_yunet:
         faces, ran = fs.detect_faces(IMG)
-    assert faces == [] and ran == [fs.MODEL_NAME_YUNET]  # ran, found nothing
+    assert faces == []
+    assert ran == [fs.MODEL_NAME_YUNET]  # ran, found nothing
 
 
 def test_detect_faces_reports_unavailable_detectors_as_not_run():
@@ -260,12 +267,16 @@ def test_parse_head_converts_logits_and_age():
 def test_confident_adult_male_estimate():
     demo = predict([head(30.0)])
     assert demo.model == fs.MODEL_NAME_AGE_GENDER
-    assert demo.age_status == "Estimated" and demo.age_group == "30 to 33" and demo.estimated_age == 30.0
+    assert demo.age_status == "Estimated"
+    assert demo.age_group == "30 to 33"
+    assert demo.estimated_age == 30.0
     low, high = demo.age_range
-    assert low < 30 < high and high - low > 6  # a wide interval: the model error is several years
+    assert low < 30 < high
+    assert high - low > 6  # a wide interval: the model error is several years
     assert 0.05 < demo.age_group_probability < 0.3
     assert demo.p_under_18 < 0.05
-    assert demo.gender == "Male" and demo.gender_confidence > 0.99
+    assert demo.gender == "Male"
+    assert demo.gender_confidence > 0.99
 
 
 def test_female_gender():
@@ -280,8 +291,11 @@ def test_minor_probability_rises_near_the_adult_boundary():
 
 def test_age_is_unsure_when_views_disagree_but_minor_probability_is_kept():
     demo = predict([head(10.0), head(30.0), head(12.0)])
-    assert demo.age_status == fs.UNSURE and demo.age_group == fs.UNSURE
-    assert demo.estimated_age is None and demo.age_range is None and demo.age_group_probability is None
+    assert demo.age_status == fs.UNSURE
+    assert demo.age_group == fs.UNSURE
+    assert demo.estimated_age is None
+    assert demo.age_range is None
+    assert demo.age_group_probability is None
     assert demo.p_under_18 is not None
     assert any("disagree" in note for note in demo.notes)
 
@@ -302,7 +316,8 @@ def test_gender_not_estimated_for_apparent_children():
 
 def test_gender_unsure_when_views_disagree_or_score_is_low():
     flip = predict([head(30.0, 5.0, -5.0), head(30.0, -5.0, 5.0), head(30.0, 5.0, -5.0)])
-    assert flip.gender == fs.UNSURE and any("Gender views disagree" in n for n in flip.notes)
+    assert flip.gender == fs.UNSURE
+    assert any("Gender views disagree" in n for n in flip.notes)
     low = predict([head(30.0, female_logit=0.5, male_logit=0.0)])
     assert low.gender == fs.UNSURE
     assert low.gender_confidence == pytest.approx(0.622, abs=0.01)
@@ -327,14 +342,16 @@ def test_unusable_face_skips_inference_and_says_unsure():
         demo = fs.predict_face_demographics(IMG, BOX, usable=False, caveat="too small")
     get.assert_not_called()
     assert demo.age_group == demo.gender == fs.UNSURE
-    assert demo.model is None and demo.notes == ["too small"]
+    assert demo.model is None
+    assert demo.notes == ["too small"]
     assert fs.predict_face_demographics(IMG, BOX, usable=False).notes
 
 
 def test_missing_model_or_unusable_crop_is_not_detected():
     with patch.object(fs, "get_session", return_value=None):
         demo = fs.predict_face_demographics(IMG, BOX)
-    assert demo.age_group == demo.gender == fs.NOT_DETECTED and demo.model is None
+    assert demo.age_group == demo.gender == fs.NOT_DETECTED
+    assert demo.model is None
 
     with patch.object(fs, "get_session", return_value=mivolo_session([head(30.0)])):
         assert fs.predict_face_demographics(IMG, [10, 10, 10, 10]).age_group == fs.NOT_DETECTED
@@ -346,4 +363,5 @@ def test_inference_failure_is_not_detected():
 
     with patch.object(fs, "get_session", return_value=FakeSession(explode)):
         demo = fs.predict_face_demographics(IMG, BOX)
-    assert demo.age_group == fs.NOT_DETECTED and demo.model is None
+    assert demo.age_group == fs.NOT_DETECTED
+    assert demo.model is None

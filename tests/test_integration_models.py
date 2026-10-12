@@ -91,4 +91,5 @@ def test_user_images_produce_well_formed_honest_results():
         for face in result["human_faces"]:
             assert face["age_status"] in ("Estimated", "Unsure", "Not Detected")
             if face["age_status"] != "Estimated":
-                assert face["estimated_age"] is None and face["age_range"] is None
+                assert face["estimated_age"] is None
+                assert face["age_range"] is None
