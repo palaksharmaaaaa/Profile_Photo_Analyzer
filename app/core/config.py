@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     REQUIRE_API_KEY_IN_PRODUCTION: bool = True
 
     # Classifier Fallback Policy
-    ALLOW_HEURISTIC_ACCEPTANCE: bool = True
+    ALLOW_HEURISTIC_ACCEPTANCE: bool = False
     REQUIRE_NEURAL_CLASSIFIER: bool = False
 
     # Production Controls: Rate Limiting & Auth & Concurrency
@@ -84,10 +84,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_security(self) -> Settings:
-        if self.ENVIRONMENT.lower() == "production" and self.REQUIRE_API_KEY_IN_PRODUCTION and not self.API_KEY:
-            raise ValueError(
-                "Production mode (ENVIRONMENT='production') requires PPA_API_KEY to be configured for API-key authentication."
-            )
+        if self.ENVIRONMENT.lower() == "production":
+            if self.REQUIRE_API_KEY_IN_PRODUCTION and not self.API_KEY:
+                raise ValueError(
+                    "Production mode (ENVIRONMENT='production') requires PPA_API_KEY to be configured for API-key authentication."
+                )
+            self.REQUIRE_NEURAL_CLASSIFIER = True
         return self
 
 

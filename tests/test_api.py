@@ -263,13 +263,15 @@ def test_settings_production_mode_validation():
     with pytest.raises(ValueError, match="Production mode .* requires PPA_API_KEY"):
         Settings(ENVIRONMENT="production", API_KEY=None, REQUIRE_API_KEY_IN_PRODUCTION=True)
 
-    # In production mode with API key -> succeeds
+    # In production mode with API key -> succeeds and enforces REQUIRE_NEURAL_CLASSIFIER
     s_prod = Settings(ENVIRONMENT="production", API_KEY="prod-secret-key", REQUIRE_API_KEY_IN_PRODUCTION=True)
     assert s_prod.API_KEY == "prod-secret-key"
+    assert s_prod.REQUIRE_NEURAL_CLASSIFIER is True
 
-    # In development mode without API key -> succeeds
+    # In development mode without API key -> succeeds and keeps REQUIRE_NEURAL_CLASSIFIER False
     s_dev = Settings(ENVIRONMENT="development", API_KEY=None)
     assert s_dev.ENVIRONMENT == "development"
+    assert s_dev.REQUIRE_NEURAL_CLASSIFIER is False
 
 
 def test_security_middleware_trusted_proxy_ip():

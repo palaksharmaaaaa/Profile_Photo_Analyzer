@@ -379,6 +379,23 @@ def _classify_via_heuristics(image: Image.Image) -> dict[str, Any]:
         }
 
     # 3. Fallback when CLIP is unavailable:
+    if settings.REQUIRE_NEURAL_CLASSIFIER:
+        return {
+            "status": "NEEDS_REVIEW",
+            "top_class": LABEL_UNCERTAIN,
+            "top_class_confidence": 0.50,
+            "photo_score": 0.50,
+            "cartoon_score": 0.50,
+            "display_label": "Heuristic Screening (Review Required)",
+            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
+            "all_predictions": [
+                {"label": LABEL_UNCERTAIN, "confidence": 0.50},
+                {"label": LABEL_REAL_PHOTO, "confidence": 0.50},
+            ],
+            "scores": {LABEL_UNCERTAIN: 0.50, LABEL_REAL_PHOTO: 0.50},
+            "reason": "Neural classifier (CLIP) is required but unavailable; heuristic screening requires manual review.",
+        }
+
     if settings.ALLOW_HEURISTIC_ACCEPTANCE:
         return {
             "status": "PHOTO_LIKE",

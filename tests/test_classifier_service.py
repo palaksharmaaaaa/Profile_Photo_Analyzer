@@ -51,6 +51,20 @@ def test_classify_image_type_fallback_needs_review():
         assert result["display_label"] == "Heuristic Screening (Review Required)"
 
 
+def test_classify_image_type_fallback_require_neural_classifier():
+    # When CLIP pipeline returns None and REQUIRE_NEURAL_CLASSIFIER is True
+    with (
+        patch("app.services.classifier_service.get_clip_pipeline", return_value=None),
+        patch("app.services.classifier_service.is_biological_diagram_or_drawing", return_value=False),
+        patch("app.services.classifier_service.is_cartoon_or_illustration", return_value=False),
+        patch.object(settings, "REQUIRE_NEURAL_CLASSIFIER", True),
+    ):
+        img = Image.new("RGB", (100, 100))
+        result = classify_image_type(img)
+        assert result["status"] == "NEEDS_REVIEW"
+        assert "Neural classifier (CLIP) is required" in result["reason"]
+
+
 def test_classify_image_type_clip_photo():
     mock_predictions = [
         {"label": "a real photograph of a real human person", "score": 0.92},

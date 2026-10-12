@@ -53,6 +53,7 @@ def test_analyzer_other_faces_only(test_image_rgb):
         }
     ]
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=[]),
         patch("app.services.analyzer.detect_non_human_entities", return_value=mock_animal),
     ):
@@ -67,6 +68,7 @@ def test_analyzer_other_faces_only(test_image_rgb):
 def test_analyzer_multiple_faces(test_image_rgb):
     faces = [MockFace(bbox=[50, 50, 150, 150]), MockFace(bbox=[200, 200, 300, 300])]
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=faces),
         patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
     ):
@@ -128,6 +130,7 @@ def test_analyzer_human_and_other_faces(test_image_rgb):
         "landmarks_inside_image": True,
     }
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=faces),
         patch("app.services.analyzer.detect_non_human_entities", return_value=mock_animal),
         patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
@@ -268,6 +271,7 @@ def test_analyzer_face_matches_non_human_entity(test_image_rgb):
         }
     ]
     with (
+        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
         patch("app.services.analyzer.detect_faces", return_value=faces),
         patch("app.services.analyzer.detect_non_human_entities", return_value=mock_anime),
     ):

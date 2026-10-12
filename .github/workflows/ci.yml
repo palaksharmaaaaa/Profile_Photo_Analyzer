@@ -39,8 +39,7 @@ jobs:
           pytest --cov=app --cov=app.py --cov-config=.coveragerc --cov-report=term-missing --cov-report=xml
 
       - name: SonarQube Cloud Scan
-        if: ${{ env.SONAR_TOKEN != '' }}
-        continue-on-error: true
+        if: ${{ secrets.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@v5.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

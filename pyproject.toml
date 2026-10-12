@@ -12,3 +12,7 @@ ignore = ["E501", "B008", "B905", "SIM105"]
 [tool.pytest.ini_options]
 addopts = "--cov --cov-config=.coveragerc --cov-report=term-missing --cov-report=xml"
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:.*Using .* with .*starlette.testclient.*",
+]
+
