@@ -10,3 +10,15 @@ __pycache__/
 .DS_Store
 uploads/
 *.log
+*.zip
+
+# Testing & Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+
+# SonarQube Scanner
+.scannerwork/
+.sonar/

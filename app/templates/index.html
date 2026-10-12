@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Profile Photo Analyzer</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --bg: #f8fafc;
+            --card-bg: #ffffff;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --success-bg: #dcfce7;
+            --success-text: #166534;
+            --warning-bg: #fef3c7;
+            --warning-text: #92400e;
+            --danger-bg: #fee2e2;
+            --danger-text: #991b1b;
+            --neutral-bg: #f1f5f9;
+            --neutral-text: #334155;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text-main);
+            padding: 36px 16px;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .panel {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 28px;
+            margin-bottom: 24px;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        h2 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 14px;
+        }
+
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 15px;
+            margin-bottom: 20px;
+        }
+
+        .upload-zone {
+            border: 2px dashed #cbd5e1;
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 32px 20px;
+            text-align: center;
+            transition: border-color 0.2s ease;
+        }
+
+        .upload-zone:hover {
+            border-color: var(--primary);
+        }
+
+        input[type="file"] {
+            display: block;
+            margin: 16px auto;
+            max-width: 320px;
+            font-size: 14px;
+        }
+
+        button {
+            display: inline-block;
+            width: 100%;
+            max-width: 300px;
+            padding: 14px 20px;
+            background: var(--primary);
+            color: #ffffff;
+            font-size: 16px;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        button:hover {
+            background: var(--primary-hover);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .status-badge {
+            padding: 14px 18px;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 15px;
+            margin-bottom: 20px;
+            text-align: center;
+            letter-spacing: 0.02em;
+        }
+
+        .status-success { background: var(--success-bg); color: var(--success-text); }
+        .status-warning { background: var(--warning-bg); color: var(--warning-text); }
+        .status-danger { background: var(--danger-bg); color: var(--danger-text); }
+        .status-neutral { background: var(--neutral-bg); color: var(--neutral-text); }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 18px;
+            margin-bottom: 20px;
+        }
+
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            background: #ffffff;
+        }
+
+        .card-label {
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .card-val {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-main);
+            overflow-wrap: anywhere;
+        }
+
+        .card-hint {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-top: 6px;
+        }
+
+        .photo-preview {
+            width: 100%;
+            height: 320px;
+            object-fit: contain;
+            background: #f1f5f9;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            margin-bottom: 8px;
+        }
+
+        .hidden { display: none !important; }
+
+        .error-box {
+            background: var(--danger-bg);
+            color: var(--danger-text);
+            padding: 16px;
+            border-radius: 8px;
+            font-weight: 500;
+            margin-top: 10px;
+        }
+
+        .footer-note {
+            font-size: 13px;
+            color: var(--text-muted);
+            line-height: 1.6;
+        }
+
+        @media (max-width: 680px) {
+            .grid-2, .grid-3 {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+
+    <div class="panel">
+        <h1>Profile Photo Analyzer</h1>
+        <p class="subtitle">
+            Validate profile photos, check face presence & visibility, detect illustrations, and estimate demographic attributes.
+        </p>
+
+        <form id="uploadForm">
+            <div class="upload-zone">
+                <strong>Upload Profile Photo</strong>
+                <p class="card-hint">Accepted formats: JPG, JPEG, PNG, WEBP (Max 8 MB)</p>
+                <input type="file" id="photo" name="file" accept=".jpg,.jpeg,.png,.webp" required>
+                <button type="submit" id="analyzeBtn">Analyze Photo</button>
+            </div>
+        </form>
+    </div>
+
+    <div id="loadingPanel" class="panel hidden">
+        <h2>Analyzing Photo...</h2>
+        <p class="subtitle">Running computer vision screening and facial visibility analysis.</p>
+    </div>
+
+    <div id="resultPanel" class="panel hidden">
+        <h2>Analysis Verdict</h2>
+        <div id="mainStatus" class="status-badge status-neutral"></div>
+
+        <div class="grid-2">
+            <div class="card">
+                <h2>Original Photo</h2>
+                <img id="uploadedPreview" class="photo-preview" alt="Uploaded Profile Photo">
+                <p id="uploadedFilename" class="card-hint"></p>
+            </div>
+            <div class="card">
+                <h2>Detected Face Region</h2>
+                <img id="annotatedPreview" class="photo-preview" alt="Annotated Face Region">
+                <p id="regionNote" class="card-hint"></p>
+            </div>
+        </div>
+
+        <p id="reasonText" class="subtitle" style="font-weight: 500;"></p>
+
+        <div class="grid-3">
+            <div class="card">
+                <div class="card-label">Image Type</div>
+                <div id="imageTypeVal" class="card-val">—</div>
+                <div id="imageConfidenceVal" class="card-hint"></div>
+            </div>
+            <div class="card">
+                <div class="card-label">Face Count</div>
+                <div id="faceCountVal" class="card-val">—</div>
+                <div id="faceConfidenceVal" class="card-hint"></div>
+            </div>
+            <div class="card">
+                <div class="card-label">Visibility & Framing</div>
+                <div id="visibilityVal" class="card-val">—</div>
+                <div id="visibilityReasonVal" class="card-hint"></div>
+            </div>
+            <div class="card">
+                <div class="card-label">Estimated Age Group</div>
+                <div id="ageVal" class="card-val">Not performed</div>
+                <div id="ageConfidenceVal" class="card-hint"></div>
+            </div>
+            <div class="card">
+                <div class="card-label">Gender Presentation</div>
+                <div id="genderVal" class="card-val">Not performed</div>
+                <div id="genderNoteVal" class="card-hint"></div>
+            </div>
+            <div class="card">
+                <div class="card-label">Age Verification</div>
+                <div id="ageVerificationVal" class="card-val">Required</div>
+                <div class="card-hint">Biometric estimates do not replace legal age verification.</div>
+            </div>
+        </div>
+
+        <p id="extraNote" class="footer-note"></p>
+    </div>
+
+    <div id="errorPanel" class="panel hidden">
+        <h2>Analysis Error</h2>
+        <div id="errorText" class="error-box"></div>
+    </div>
+
+    <div class="panel">
+        <p class="footer-note">
+            Notice: All facial detection and demographic classifications are automated probabilistic estimates.
+            Photographs should be evaluated through secure, dedicated KYC channels when enforcing legal age or identity restrictions.
+        </p>
+    </div>
+
+</div>
+
+<script>
+    const form = document.getElementById("uploadForm");
+    const button = document.getElementById("analyzeBtn");
+
+    const hide = id => document.getElementById(id).classList.add("hidden");
+    const show = id => document.getElementById(id).classList.remove("hidden");
+
+    function setText(id, value) {
+        document.getElementById(id).textContent =
+            (value === undefined || value === null || value === "") ? "—" : String(value);
+    }
+
+    function setStatus(text, typeClass) {
+        const el = document.getElementById("mainStatus");
+        el.textContent = text;
+        el.className = "status-badge " + typeClass;
+    }
+
+    form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const fileInput = document.getElementById("photo");
+        if (!fileInput.files.length) {
+            alert("Please select a profile photo.");
+            return;
+        }
+
+        hide("resultPanel");
+        hide("errorPanel");
+        show("loadingPanel");
+        button.disabled = true;
+        button.textContent = "Analyzing...";
+
+        try {
+            const formData = new FormData(form);
+            const response = await fetch("/analyze-profile-photo", {
+                method: "POST",
+                body: formData
+            });
+
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.reason || data.detail || ("Error: " + response.status));
+            }
+
+            renderResults(data);
+            show("resultPanel");
+        } catch (err) {
+            setText("errorText", err.message);
+            show("errorPanel");
+        } finally {
+            hide("loadingPanel");
+            button.disabled = false;
+            button.textContent = "Analyze Photo";
+        }
+    });
+
+    function renderResults(data) {
+        const origImg = document.getElementById("uploadedPreview");
+        const annotImg = document.getElementById("annotatedPreview");
+
+        origImg.src = data.original_image || "";
+        annotImg.src = data.annotated_image || "";
+
+        setText("uploadedFilename", data.filename || "Uploaded photo");
+        setText("regionNote", data.region_note || "");
+
+        const status = data.posting_status || "UNKNOWN";
+        const accepted = data.accepted === true;
+        const imageCheck = data.image_type_check || {};
+
+        if (status === "NON_PHOTO_WARNING") {
+            setStatus("WARNING — " + (imageCheck.display_label || "NON-PHOTO").toUpperCase() + " DETECTED", "status-warning");
+        } else if (status === "AGE_VERIFICATION_REQUIRED") {
+            setStatus("PHOTO PASSED — AGE VERIFICATION REQUIRED", "status-warning");
+        } else if (accepted) {
+            setStatus("PHOTO CHECKS PASSED", "status-success");
+        } else if (status.includes("REVIEW") || status.includes("UNCERTAIN")) {
+            setStatus("REVIEW REQUIRED", "status-warning");
+        } else {
+            setStatus("PHOTO REJECTED", "status-danger");
+        }
+
+        setText("reasonText", data.reason || data.posting_reason);
+        setText("imageTypeVal", imageCheck.display_label || imageCheck.top_class || "—");
+        setText("imageConfidenceVal", imageCheck.top_class_confidence ? ("Confidence: " + (imageCheck.top_class_confidence * 100).toFixed(1) + "%") : "");
+
+        setText("faceCountVal", (data.face_count !== undefined) ? (data.face_count + (data.face_count === 1 ? " Face" : " Faces")) : "—");
+        setText("faceConfidenceVal", data.face_detection_confidence ? ("Detection: " + (data.face_detection_confidence * 100).toFixed(1) + "%") : "");
+
+        const vis = data.face_visibility || {};
+        setText("visibilityVal", vis.status || "—");
+        setText("visibilityReasonVal", vis.reason || "");
+
+        setText("ageVal", data.estimated_age_group || "Not performed");
+        setText("ageConfidenceVal", data.age_model_confidence ? ("Model score: " + (data.age_model_confidence * 100).toFixed(1) + "%") : (data.age_note || ""));
+
+        setText("genderVal", data.gender_presentation_prediction || "Not performed");
+        setText("genderNoteVal", data.gender_note || "");
+
+        setText("ageVerificationVal", data.age_verification_required ? "Required" : "Not required");
+        setText("extraNote", data.note || "");
+    }
+</script>
+</body>
+</html>
