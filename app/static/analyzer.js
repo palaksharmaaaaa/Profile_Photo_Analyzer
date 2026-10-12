@@ -24,12 +24,14 @@
     };
 
     const STAGE_BOX_CLASS = { human: "human", other: "other", unsure: "unsure" };
-    const AVATAR_SIZE = 48;
+    const AVATAR_SIZE = 52;
+    const DROP_HINT = $("upload-hint").textContent;
 
     let lastResult = null;
     let previewUrl = null;
 
     // ---- Small helpers -------------------------------------------------------------------------------
+    const prefersReducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const show = (id) => $(id).classList.remove("hidden");
     const hide = (id) => $(id).classList.add("hidden");
 
@@ -63,6 +65,23 @@
         step.classList.toggle("active", status === "running");
     }
 
+    /** Show the chosen photo (and its name) inside the drop zone. */
+    function showChosenFile(file) {
+        showPreview(file);
+        $("drop-preview").src = previewUrl;
+        show("drop-preview");
+        hide("upload-visual");
+        $("upload-title-text").textContent = file.name;
+        $("upload-hint").textContent = `${(file.size / 1024 / 1024).toFixed(2)} MB - click to choose a different photo`;
+    }
+
+    function resetDropZone() {
+        hide("drop-preview");
+        show("upload-visual");
+        $("upload-title-text").replaceChildren("Drop a photo here, or ", el("span", { class: "link", text: "browse" }));
+        $("upload-hint").textContent = DROP_HINT;
+    }
+
     function resetSteps() {
         [1, 2, 3, 4].forEach((n) => setStep(n, "pending"));
     }
@@ -94,7 +113,7 @@
         setText("other-hint", data.unsure_face_count ? `${data.unsure_face_count} more unverified` : "");
     }
 
-    /** A 48px thumbnail of the face, cropped from the returned (analysed) image. */
+    /** A square thumbnail of the face, cropped from the returned (analysed) image. */
     function avatar(face) {
         const canvas = el("canvas", { class: "avatar" });
         canvas.width = canvas.height = AVATAR_SIZE;
@@ -295,6 +314,7 @@
             show("result-panel");
             renderResult(data);
             show("reset-button");
+            $("result-panel").scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
         } catch (error) {
             $("error-text").textContent = error.message;
             show("error-panel");
@@ -309,7 +329,9 @@
         $("upload-form").reset();
         lastResult = null;
         ["result-panel", "error-panel", "loading-panel", "reset-button"].forEach(hide);
+        resetDropZone();
         resetSteps();
+        window.scrollTo({ top: 0, behavior: prefersReducedMotion() ? "auto" : "smooth" });
     }
 
     function download(href, name) {
@@ -328,10 +350,10 @@
     zone.addEventListener("drop", (event) => {
         if (event.dataTransfer.files.length) {
             $("photo").files = event.dataTransfer.files;
-            showPreview(event.dataTransfer.files[0]);
+            showChosenFile(event.dataTransfer.files[0]);
         }
     });
-    $("photo").addEventListener("change", (event) => event.target.files[0] && showPreview(event.target.files[0]));
+    $("photo").addEventListener("change", (event) => event.target.files[0] && showChosenFile(event.target.files[0]));
     $("upload-form").addEventListener("submit", analyze);
     $("reset-button").addEventListener("click", reset);
     $("analyze-another").addEventListener("click", reset);

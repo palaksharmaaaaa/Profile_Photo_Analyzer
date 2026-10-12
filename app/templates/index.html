@@ -3,63 +3,82 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="Checks a profile photo for real human faces and estimates age and gender, running entirely on this server.">
     <title>Profile Photo Analyzer</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Ccircle cx='16' cy='13' r='5' fill='none' stroke='white' stroke-width='2.2'/%3E%3Cpath d='M7 26c1.5-5 5-7 9-7s7.5 2 9 7' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="/static/analyzer.css">
 </head>
 <body>
-<div class="container">
+<main class="container">
+
+    <!-- Header ------------------------------------------------------------------------------------- -->
+    <header class="hero">
+        <span class="eyebrow">Private. On-server. No third parties.</span>
+        <h1>Profile Photo Analyzer</h1>
+        <p class="lead">
+            Upload a photo. We check that it has real content, find every face, and tell real human faces apart from
+            animals, birds, cartoons, paintings and diagrams. For each real human face you get an age bracket and a gender,
+            or an honest <strong>Unsure</strong> when the models cannot support an answer.
+        </p>
+    </header>
 
     <!-- Upload ------------------------------------------------------------------------------------- -->
-    <section class="panel">
-        <h1>Profile Photo Analyzer</h1>
-        <p class="subtitle">
-            Upload a photo. The analyzer checks that it has real content, finds every face, and verifies which faces are
-            real human faces (animals, birds, cartoons, paintings and diagrams are counted separately). For each real
-            human face it estimates the age in 3-year brackets and the gender. Anything the models cannot support is
-            reported as <strong>Unsure</strong> or <strong>Not Detected</strong>.
-        </p>
-
-        <div class="stepper" id="stepper">
-            <div class="step" data-step="1">
-                <div class="step-head"><span class="step-number">STEP 1</span><span class="pill pill-pending">Pending</span></div>
-                <div class="step-title">File check</div>
-                <div class="step-detail">Real image format, within the 10 MB limit.</div>
-            </div>
-            <div class="step" data-step="2">
-                <div class="step-head"><span class="step-number">STEP 2</span><span class="pill pill-pending">Pending</span></div>
-                <div class="step-title">Visual information</div>
-                <div class="step-detail">Rejects blank, solid-colour and uniform images.</div>
-            </div>
-            <div class="step" data-step="3">
-                <div class="step-head"><span class="step-number">STEP 3</span><span class="pill pill-pending">Pending</span></div>
-                <div class="step-title">Faces</div>
-                <div class="step-detail">Detects faces, then verifies each as human, animal, cartoon, ...</div>
-            </div>
-            <div class="step" data-step="4">
-                <div class="step-head"><span class="step-number">STEP 4</span><span class="pill pill-pending">Pending</span></div>
-                <div class="step-title">Age and gender</div>
-                <div class="step-detail">For every verified real human face.</div>
-            </div>
-        </div>
+    <section class="panel" aria-labelledby="upload-title">
+        <h2 id="upload-title" class="sr-only">Upload a photo</h2>
 
         <form id="upload-form">
-            <div class="upload-zone" id="drop-zone">
-                <span class="upload-icon">📷</span>
-                <strong>Select or drag and drop a photo</strong>
-                <p class="card-hint">JPG, PNG, WEBP, GIF, TIFF or BMP, up to 10 MB. The format is checked from the file contents.</p>
-                <input type="file" id="photo" name="file" accept=".jpg,.jpeg,.jfif,.png,.webp,.bmp,.gif,.tif,.tiff" required>
-                <div class="button-row">
-                    <button type="submit" id="analyze-button">Analyze photo</button>
-                    <button type="button" class="outline hidden" id="reset-button">Upload another</button>
-                </div>
+            <label class="upload-zone" id="drop-zone" for="photo">
+                <input type="file" id="photo" name="file" class="sr-only"
+                       accept=".jpg,.jpeg,.jfif,.png,.webp,.bmp,.gif,.tif,.tiff" required>
+                <span class="upload-visual" id="upload-visual">
+                    <svg class="upload-icon" viewBox="0 0 48 48" aria-hidden="true">
+                        <rect x="6" y="10" width="36" height="28" rx="6" fill="none" stroke="currentColor" stroke-width="2.4"/>
+                        <circle cx="17" cy="20" r="3.2" fill="none" stroke="currentColor" stroke-width="2.4"/>
+                        <path d="M8 34l10-9 7 6 6-5 9 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </span>
+                <img class="upload-thumb hidden" id="drop-preview" alt="Selected photo">
+                <span class="upload-title" id="upload-title-text">Drop a photo here, or <span class="link">browse</span></span>
+                <span class="upload-hint" id="upload-hint">JPG, PNG, WEBP, GIF, TIFF or BMP &middot; up to 10 MB &middot; checked by file contents</span>
+            </label>
+
+            <div class="button-row">
+                <button type="submit" id="analyze-button" class="primary">Analyze photo</button>
+                <button type="button" class="ghost hidden" id="reset-button">Choose another</button>
             </div>
         </form>
+
+        <ol class="stepper" id="stepper" aria-label="Analysis steps">
+            <li class="step" data-step="1">
+                <div class="step-head"><span class="step-number">01</span><span class="pill pill-pending">Pending</span></div>
+                <div class="step-title">File check</div>
+                <div class="step-detail">Real image, within 10 MB.</div>
+            </li>
+            <li class="step" data-step="2">
+                <div class="step-head"><span class="step-number">02</span><span class="pill pill-pending">Pending</span></div>
+                <div class="step-title">Visual information</div>
+                <div class="step-detail">Rejects blank and uniform images.</div>
+            </li>
+            <li class="step" data-step="3">
+                <div class="step-head"><span class="step-number">03</span><span class="pill pill-pending">Pending</span></div>
+                <div class="step-title">Faces</div>
+                <div class="step-detail">Finds faces, verifies human or not.</div>
+            </li>
+            <li class="step" data-step="4">
+                <div class="step-head"><span class="step-number">04</span><span class="pill pill-pending">Pending</span></div>
+                <div class="step-title">Age and gender</div>
+                <div class="step-detail">For each verified human face.</div>
+            </li>
+        </ol>
     </section>
 
     <!-- Loading ------------------------------------------------------------------------------------ -->
-    <section class="panel hidden" id="loading-panel">
-        <h2>Analyzing the photo...</h2>
-        <p class="subtitle">Checking the image, finding and verifying faces, estimating age and gender. This takes a few seconds.</p>
+    <section class="panel hidden" id="loading-panel" aria-live="polite">
+        <div class="loading-copy">
+            <h2>Analyzing the photo&hellip;</h2>
+            <p class="subtitle">Checking the image, finding and verifying faces, estimating age and gender. This takes a few seconds.</p>
+        </div>
         <div class="stage">
             <img id="loading-preview" alt="Photo being analyzed">
             <div class="scan-laser"></div>
@@ -67,62 +86,61 @@
     </section>
 
     <!-- Result ------------------------------------------------------------------------------------- -->
-    <section class="panel hidden" id="result-panel">
-        <h2>Result</h2>
+    <section class="panel hidden" id="result-panel" aria-live="polite">
         <div class="verdict verdict-neutral" id="verdict"></div>
         <p class="reason" id="reason"></p>
         <p class="summary-line" id="summary"></p>
 
         <div class="grid-2">
-            <div class="card">
-                <div class="card-label">Your photo</div>
+            <figure class="card media-card">
+                <figcaption class="card-label">Your photo</figcaption>
                 <div class="stage">
                     <img id="original-image" alt="Uploaded photo">
                     <div class="overlay" id="overlay"></div>
                 </div>
                 <p class="card-hint" id="filename"></p>
-            </div>
-            <div class="card">
-                <div class="card-label">Annotated by the analyzer</div>
+            </figure>
+            <figure class="card media-card">
+                <figcaption class="card-label">Annotated by the analyzer</figcaption>
                 <div class="stage"><img id="annotated-image" alt="Photo with detected faces outlined"></div>
                 <p class="card-hint" id="legend"></p>
-            </div>
+            </figure>
         </div>
 
         <div class="grid-4">
-            <div class="card">
+            <div class="card stat">
                 <div class="card-label">Visual information</div>
                 <div class="card-value" id="info-value">-</div>
                 <div class="card-hint" id="info-hint"></div>
             </div>
-            <div class="card">
+            <div class="card stat">
                 <div class="card-label">Image type</div>
                 <div class="card-value" id="type-value">-</div>
                 <div class="card-hint" id="type-hint"></div>
             </div>
-            <div class="card">
+            <div class="card stat">
                 <div class="card-label">Real human faces</div>
-                <div class="card-value" id="human-count">-</div>
+                <div class="card-value big" id="human-count">-</div>
                 <div class="card-hint" id="human-hint"></div>
             </div>
-            <div class="card">
+            <div class="card stat">
                 <div class="card-label">Non-human faces</div>
-                <div class="card-value" id="other-count">-</div>
+                <div class="card-value big" id="other-count">-</div>
                 <div class="card-hint" id="other-hint"></div>
             </div>
         </div>
 
-        <div id="humans-section" class="hidden">
+        <div id="humans-section" class="result-section hidden">
             <h2>Real human faces</h2>
             <div id="humans"></div>
         </div>
 
-        <div id="others-section" class="hidden">
+        <div id="others-section" class="result-section hidden">
             <h2>Non-human faces</h2>
             <div id="others"></div>
         </div>
 
-        <div id="unsure-section" class="hidden">
+        <div id="unsure-section" class="result-section hidden">
             <h2>Unverified candidates</h2>
             <div id="unsure"></div>
         </div>
@@ -135,30 +153,30 @@
         </details>
 
         <div class="actions">
-            <button type="button" class="outline" id="export-json">Export JSON report</button>
-            <button type="button" class="outline" id="download-annotated">Download annotated image</button>
-            <button type="button" class="outline" id="analyze-another">Analyze another photo</button>
+            <button type="button" class="ghost" id="export-json">Export JSON report</button>
+            <button type="button" class="ghost" id="download-annotated">Download annotated image</button>
+            <button type="button" class="primary" id="analyze-another">Analyze another photo</button>
         </div>
 
-        <p class="note" id="disclaimer" style="margin-top: 18px;"></p>
+        <p class="note disclaimer" id="disclaimer"></p>
     </section>
 
     <!-- Error -------------------------------------------------------------------------------------- -->
-    <section class="panel hidden" id="error-panel">
+    <section class="panel hidden" id="error-panel" role="alert">
         <h2>The photo could not be analyzed</h2>
         <div class="error-box" id="error-text"></div>
     </section>
 
-    <section class="panel">
+    <footer class="footer">
         <p class="note">
             Every value on this page comes from the models listed under Technical details, running on this server;
             nothing is sent to an external service. Age and gender are appearance-based estimates: the typical age
             error is several years, so a 3-year bracket is only the most likely bracket (the range and probability are
             shown for each face). Age estimation is not age verification.
         </p>
-    </section>
+    </footer>
 
-</div>
+</main>
 <script src="/static/analyzer.js"></script>
 </body>
 </html>
