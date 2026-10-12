@@ -384,7 +384,24 @@ def classify_image_type(image: Image.Image) -> dict[str, Any]:
                 "reason": "Image exhibits flat color palette and hard vector/illustration outlines.",
             }
 
-        # 3. Fallback when CLIP is unavailable: Treat heuristic-only output as review-required
+        # 3. Fallback when CLIP is unavailable:
+        if settings.ALLOW_HEURISTIC_ACCEPTANCE:
+            return {
+                "status": "PHOTO_LIKE",
+                "top_class": LABEL_REAL_PHOTO,
+                "top_class_confidence": 0.85,
+                "photo_score": 0.85,
+                "cartoon_score": 0.15,
+                "display_label": "Real Photo (Heuristic Screened)",
+                "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
+                "all_predictions": [
+                    {"label": LABEL_REAL_PHOTO, "confidence": 0.85},
+                    {"label": LABEL_CARTOON, "confidence": 0.15},
+                ],
+                "scores": {LABEL_REAL_PHOTO: 0.85, LABEL_CARTOON: 0.15},
+                "reason": "Image passed computer vision diagram and illustration screening heuristics.",
+            }
+
         return {
             "status": "NEEDS_REVIEW",
             "top_class": LABEL_UNCERTAIN,

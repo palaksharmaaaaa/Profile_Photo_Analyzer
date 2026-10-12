@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -61,15 +62,33 @@ class Settings(BaseSettings):
     FAIRFACE_MODEL_NAME: str = "dima806/fairface_age_image_detection"
     FORCE_CPU: bool = True
 
+    # Environment & Deployment Mode
+    ENVIRONMENT: str = "development"
+    REQUIRE_API_KEY_IN_PRODUCTION: bool = True
+
+    # Classifier Fallback Policy
+    ALLOW_HEURISTIC_ACCEPTANCE: bool = True
+    REQUIRE_NEURAL_CLASSIFIER: bool = False
+
     # Production Controls: Rate Limiting & Auth & Concurrency
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_PER_MINUTE: int = 60
     MAX_CONCURRENT_REQUESTS: int = 10
     API_KEY: str | None = None
     API_KEY_HEADER: str = "X-API-Key"
+    TRUSTED_PROXIES: list[str] = ["127.0.0.1", "::1"]
+    MAX_TRACKED_IPS: int = 10_000
 
     CORS_ORIGINS: list[str] = ["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:3000"]
     CORS_ALLOW_CREDENTIALS: bool = False
+
+    @model_validator(mode="after")
+    def validate_production_security(self) -> Settings:
+        if self.ENVIRONMENT.lower() == "production" and self.REQUIRE_API_KEY_IN_PRODUCTION and not self.API_KEY:
+            raise ValueError(
+                "Production mode (ENVIRONMENT='production') requires PPA_API_KEY to be configured for API-key authentication."
+            )
+        return self
 
 
 settings = Settings()

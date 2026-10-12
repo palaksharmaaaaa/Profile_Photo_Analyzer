@@ -92,6 +92,24 @@ def test_ensure_model_file_download_too_small(tmp_path):
         assert not target.is_file()
 
 
+def test_ensure_model_file_download_hash_mismatch(tmp_path):
+    target = tmp_path / mm.settings.YUNET_MODEL_NAME
+    # Download payload has correct size but wrong cryptographic hash
+    mock_resp = io.BytesIO(b"\x08" + b"z" * 60000)
+
+    class DummyContext:
+        def __enter__(self):
+            return mock_resp
+
+        def __exit__(self, *args):
+            pass
+
+    with patch("urllib.request.urlopen", return_value=DummyContext()):
+        assert mm.ensure_model_file(target, "http://example.com/fake_yunet.onnx") is False
+        assert not target.is_file()
+        assert not target.with_suffix(f"{target.suffix}.tmp").is_file()
+
+
 def test_is_valid_model_file_rejects_non_onnx_signature(tmp_path):
     f = tmp_path / "fake_non_onnx.onnx"
     f.write_bytes(b"This is a 72 KB text file masquerading as a model..." + b"x" * 72000)

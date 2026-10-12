@@ -3,6 +3,7 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
+from app.core.config import settings
 from app.services.classifier_service import (
     classify_image_type,
     friendly_image_type,
@@ -22,12 +23,27 @@ def test_friendly_image_type():
     assert friendly_image_type("") == "Uncertain"
 
 
-def test_classify_image_type_fallback():
-    # When CLIP pipeline returns None, unverified fallback defaults to NEEDS_REVIEW
+def test_classify_image_type_fallback_heuristic_accepted():
+    # When CLIP pipeline returns None and ALLOW_HEURISTIC_ACCEPTANCE is True (default)
     with (
         patch("app.services.classifier_service.get_clip_pipeline", return_value=None),
         patch("app.services.classifier_service.is_biological_diagram_or_drawing", return_value=False),
         patch("app.services.classifier_service.is_cartoon_or_illustration", return_value=False),
+        patch.object(settings, "ALLOW_HEURISTIC_ACCEPTANCE", True),
+    ):
+        img = Image.new("RGB", (100, 100))
+        result = classify_image_type(img)
+        assert result["status"] == "PHOTO_LIKE"
+        assert result["display_label"] == "Real Photo (Heuristic Screened)"
+
+
+def test_classify_image_type_fallback_needs_review():
+    # When CLIP pipeline returns None and ALLOW_HEURISTIC_ACCEPTANCE is False (strict review mode)
+    with (
+        patch("app.services.classifier_service.get_clip_pipeline", return_value=None),
+        patch("app.services.classifier_service.is_biological_diagram_or_drawing", return_value=False),
+        patch("app.services.classifier_service.is_cartoon_or_illustration", return_value=False),
+        patch.object(settings, "ALLOW_HEURISTIC_ACCEPTANCE", False),
     ):
         img = Image.new("RGB", (100, 100))
         result = classify_image_type(img)

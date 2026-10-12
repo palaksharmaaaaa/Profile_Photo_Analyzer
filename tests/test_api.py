@@ -252,3 +252,85 @@ def test_security_middleware_concurrency_limit():
         r_busy = client.post("/analyze-profile-photo")
         assert r_busy.status_code == 503
         assert "concurrency limit" in r_busy.json()["detail"]
+
+
+def test_settings_production_mode_validation():
+    import pytest
+
+    from app.core.config import Settings
+
+    # In production mode without API key -> raises ValueError
+    with pytest.raises(ValueError, match="Production mode .* requires PPA_API_KEY"):
+        Settings(ENVIRONMENT="production", API_KEY=None, REQUIRE_API_KEY_IN_PRODUCTION=True)
+
+    # In production mode with API key -> succeeds
+    s_prod = Settings(ENVIRONMENT="production", API_KEY="prod-secret-key", REQUIRE_API_KEY_IN_PRODUCTION=True)
+    assert s_prod.API_KEY == "prod-secret-key"
+
+    # In development mode without API key -> succeeds
+    s_dev = Settings(ENVIRONMENT="development", API_KEY=None)
+    assert s_dev.ENVIRONMENT == "development"
+
+
+def test_security_middleware_trusted_proxy_ip():
+    from unittest.mock import MagicMock
+
+    from starlette.requests import Request
+
+    from app.core.config import settings
+    from app.main import ProductionSecurityMiddleware
+
+    # Mock request with trusted peer and X-Forwarded-For
+    scope = {
+        "type": "http",
+        "client": ("127.0.0.1", 12345),
+        "headers": [(b"x-forwarded-for", b"203.0.113.50, 10.0.0.1")],
+    }
+    req = Request(scope)
+    with patch.object(settings, "TRUSTED_PROXIES", ["127.0.0.1"]):
+        resolved = ProductionSecurityMiddleware._resolve_client_ip(req)
+        assert resolved == "203.0.113.50"
+
+    # Request without client tuple
+    req_no_client = Request({"type": "http", "headers": []})
+    assert ProductionSecurityMiddleware._resolve_client_ip(req_no_client) == "unknown"
+
+
+def test_rate_limit_pruning():
+    import time
+
+    import app.main as app_main
+    from app.core.config import settings
+    from app.main import ProductionSecurityMiddleware
+
+    now = time.time()
+    with app_main._rate_limit_lock:
+        app_main._request_records.clear()
+        app_main._request_records["1.1.1.1"] = [now - 120.0]
+        app_main._request_records["2.2.2.2"] = [now]
+        app_main._request_records["3.3.3.3"] = []
+
+    ProductionSecurityMiddleware._prune_rate_limit_records(now)
+    with app_main._rate_limit_lock:
+        assert "1.1.1.1" not in app_main._request_records
+        assert "3.3.3.3" not in app_main._request_records
+        assert "2.2.2.2" in app_main._request_records
+
+    # Test capacity cap eviction
+    with patch.object(settings, "MAX_TRACKED_IPS", 2):
+        with app_main._rate_limit_lock:
+            app_main._request_records["4.4.4.4"] = [now]
+            app_main._request_records["5.5.5.5"] = [now]
+        ProductionSecurityMiddleware._prune_rate_limit_records(now)
+        with app_main._rate_limit_lock:
+            assert len(app_main._request_records) <= 2
+
+    # Test threshold trigger inside _check_rate_limit (> 100 entries)
+    with app_main._rate_limit_lock:
+        app_main._request_records.clear()
+        for i in range(105):
+            app_main._request_records[f"10.0.0.{i}"] = [now - 120.0]
+
+    ProductionSecurityMiddleware._check_rate_limit("10.0.0.200", now)
+    with app_main._rate_limit_lock:
+        assert len(app_main._request_records) <= 2

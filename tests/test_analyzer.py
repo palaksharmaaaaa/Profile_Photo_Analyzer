@@ -294,8 +294,8 @@ def test_analyzer_classification_needs_review(test_image_rgb):
     ):
         result = analyze_profile_photo_image(test_image_rgb)
         assert result["accepted"] is False
-        assert result["posting_status"] == "NON_PHOTO_WARNING"
-        assert "uncertain" in result["reason"].lower()
+        assert result["posting_status"] == "MANUAL_REVIEW_REQUIRED"
+        assert "uncertain" in result["reason"].lower() or "manual" in result["reason"].lower()
 
 
 def test_analyzer_yunet_detected_face_demographics_flow(test_image_rgb):
@@ -368,8 +368,8 @@ def test_analyzer_classification_uncertain_fails_closed(test_image_rgb):
     ):
         result = analyze_profile_photo_image(test_image_rgb)
         assert result["accepted"] is False
-        assert result["posting_status"] == "NON_PHOTO_WARNING"
-        assert "uncertain" in result["reason"].lower()
+        assert result["posting_status"] == "MANUAL_REVIEW_REQUIRED"
+        assert "uncertain" in result["reason"].lower() or "manual" in result["reason"].lower()
 
 
 def test_resolve_executed_models_all_branches():

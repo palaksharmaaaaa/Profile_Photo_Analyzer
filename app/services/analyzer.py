@@ -512,8 +512,15 @@ def _determine_single_face_decision(
     age_label: str,
     minor_risk: bool,
     type_warning: str,
+    is_review_required: bool = False,
 ) -> tuple[bool, str, str]:
     """Determine acceptance and status code for a single human face."""
+    if is_review_required:
+        return (
+            False,
+            "MANUAL_REVIEW_REQUIRED",
+            f"{type_warning} Image screening requires human review before automated profile acceptance.",
+        )
     if non_photo:
         return (
             False,
@@ -568,6 +575,8 @@ def _render_annotation(
         box_label = f"AGE GROUP: {age_label}"
     elif posting_status == "NON_PHOTO_WARNING":
         box_label = "WARNING: NON-PHOTO IMAGE"
+    elif posting_status == "MANUAL_REVIEW_REQUIRED":
+        box_label = "MANUAL REVIEW REQUIRED"
     else:
         box_label = "REVIEW REQUIRED"
 
@@ -671,6 +680,7 @@ def analyze_profile_photo_image(
         age_label,
         minor_risk,
         type_warning,
+        is_review_required=is_review_or_uncertain,
     )
 
     annot_b64 = _render_annotation(

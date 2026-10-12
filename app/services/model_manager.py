@@ -52,7 +52,11 @@ def _verify_model_loadable(model_path: Path) -> bool:
         return False
 
 
-def is_valid_model_file(model_path: Path, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
+def is_valid_model_file(
+    model_path: Path,
+    min_size: int = settings.MIN_MODEL_FILE_SIZE,
+    expected_name: str | None = None,
+) -> bool:
     """
     Check if model file exists, meets minimum size, and passes cryptographic
     pinned hash verification or deep protobuf load integrity check.
@@ -72,7 +76,8 @@ def is_valid_model_file(model_path: Path, min_size: int = settings.MIN_MODEL_FIL
     if cached is not None and cached[0] == mtime:
         return cached[1]
 
-    pinned_hash = MODEL_PINNED_HASHES.get(model_path.name)
+    lookup_name = expected_name or model_path.name
+    pinned_hash = MODEL_PINNED_HASHES.get(lookup_name)
     if pinned_hash:
         try:
             actual_hash = _calculate_file_sha256(model_path)
@@ -117,8 +122,14 @@ def ensure_model_file(model_path: Path, download_url: str, min_size: int = setti
         if downloaded_size < min_size:
             raise ValueError(f"Downloaded model file is too small ({downloaded_size} bytes < {min_size} bytes)")
 
+        # Verify cryptographic hash and model loadability before moving into destination path
+        if not is_valid_model_file(temp_path, min_size=min_size, expected_name=model_path.name):
+            raise ValueError(
+                f"Downloaded file for {model_path.name} failed cryptographic integrity or verification check."
+            )
+
         os.replace(temp_path, model_path)
-        logger.info(f"Successfully downloaded {model_path.name} ({downloaded_size} bytes)")
+        logger.info(f"Successfully downloaded and verified {model_path.name} ({downloaded_size} bytes)")
         return True
     except Exception as exc:
         logger.warning(f"Could not download model {model_path.name} from {download_url}: {exc}")

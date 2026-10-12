@@ -79,12 +79,37 @@ project-profile-photo-analyzer/
 
 ---
 
+## Production Security & Configuration
+
+| Environment Variable | Default | Purpose / Production Guidance |
+| :--- | :--- | :--- |
+| `PPA_ENVIRONMENT` | `development` | Set to `production` for live deployments. Enforces authentication fail-closed rules. |
+| `PPA_API_KEY` | `None` | **Mandatory** in `production` mode. Rejects unauthenticated callers (`401 Unauthorized`). |
+| `PPA_API_KEY_HEADER` | `X-API-Key` | Header checked for API key authentication (Bearer token also supported). |
+| `PPA_RATE_LIMIT_PER_MINUTE`| `60` | Sliding-window request allowance per client IP. Returns `429 Too Many Requests`. |
+| `PPA_MAX_CONCURRENT_REQUESTS`| `10` | Concurrency guard per worker process. Returns `503 Service Unavailable`. |
+| `PPA_TRUSTED_PROXIES` | `["127.0.0.1", "::1"]` | Trusted reverse proxy IPs used to inspect `X-Forwarded-For` for client origin. |
+| `PPA_MAX_TRACKED_IPS` | `10000` | Bounded memory ceiling for in-memory rate-limit IP records. |
+| `PPA_ALLOW_HEURISTIC_ACCEPTANCE` | `True` | Automatically accepts real photos passing CV screening heuristics when CLIP is absent. |
+| `PPA_REQUIRE_NEURAL_CLASSIFIER` | `False` | When `True`, routes non-CLIP environments to `MANUAL_REVIEW_REQUIRED`. |
+
+> [!NOTE]
+> For multi-worker, horizontally scaled clusters, rate-limit state should be backed by a shared Redis cluster or sticky-session routing at the API gateway layer.
+
+---
+
+## Evaluation, Accuracy & Fairness
+
+Empirical accuracy benchmarks on diverse demographic datasets (FairFace, UTKFace, LFW), age regression MAE targets ($\le 4.2$ years), gender parity metrics, fail-closed minor protection, and operational latency budgets (<250 ms p95 on CPU) are detailed in the [Evaluation and Fairness Specification](docs/EVALUATION_AND_FAIRNESS.md).
+
+---
+
 ## Installation & Setup
 
 ### 1. Create a Virtual Environment
 
 ```bash
-uv venv --python 3.10 .venv
+python -m venv .venv
 .venv\Scripts\activate
 ```
 
@@ -125,3 +150,4 @@ npx sonarqube-scanner
 - **SonarCloud Project Key**: `hgarg02_project-profile-photo-analyzer`
 - **SonarCloud Organization**: `hgarg02`
 - **Dashboard**: [SonarCloud Project Dashboard](https://sonarcloud.io/dashboard?id=hgarg02_project-profile-photo-analyzer)
+
