@@ -26,6 +26,42 @@ EXEMPT_PATHS: frozenset[str] = frozenset({"/", "/health", "/docs", "/openapi.jso
 class ProductionSecurityMiddleware(BaseHTTPMiddleware):
     """Enforce API authentication, rate limiting, and concurrency limits."""
 
+    @staticmethod
+    def _verify_api_key(request: Request) -> JSONResponse | None:
+        """Validate API key from custom header or Bearer authorization."""
+        api_key = request.headers.get(settings.API_KEY_HEADER)
+        if not api_key:
+            auth_hdr = request.headers.get("Authorization", "")
+            if auth_hdr.startswith("Bearer "):
+                api_key = auth_hdr[7:].strip()
+        if api_key != settings.API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized: Invalid or missing API key."},
+            )
+        return None
+
+    @staticmethod
+    def _check_rate_limit(client_ip: str, now: float) -> tuple[JSONResponse | None, int]:
+        """Enforce sliding-window rate limit per client IP."""
+        with _rate_limit_lock:
+            window_start = now - 60.0
+            timestamps = [t for t in _request_records[client_ip] if t > window_start]
+            if len(timestamps) >= settings.RATE_LIMIT_PER_MINUTE:
+                _request_records[client_ip] = timestamps
+                return (
+                    JSONResponse(
+                        status_code=429,
+                        content={"detail": "Too Many Requests: Rate limit exceeded."},
+                        headers={"Retry-After": "60"},
+                    ),
+                    0,
+                )
+            timestamps.append(now)
+            _request_records[client_ip] = timestamps
+            remaining = max(0, settings.RATE_LIMIT_PER_MINUTE - len(timestamps))
+            return None, remaining
+
     async def dispatch(self, request: Request, call_next):
         global _active_requests
 
@@ -34,34 +70,17 @@ class ProductionSecurityMiddleware(BaseHTTPMiddleware):
 
         # 1. API key authentication check (if configured)
         if settings.API_KEY and not is_exempt:
-            api_key = request.headers.get(settings.API_KEY_HEADER)
-            if not api_key:
-                auth_hdr = request.headers.get("Authorization", "")
-                if auth_hdr.startswith("Bearer "):
-                    api_key = auth_hdr[7:].strip()
-            if api_key != settings.API_KEY:
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Unauthorized: Invalid or missing API key."},
-                )
+            auth_error = self._verify_api_key(request)
+            if auth_error:
+                return auth_error
 
         # 2. Rate limiting (sliding window per client IP)
         client_ip = request.client.host if request.client else "unknown"
         now = time.time()
         if settings.RATE_LIMIT_ENABLED and not is_exempt:
-            with _rate_limit_lock:
-                window_start = now - 60.0
-                timestamps = [t for t in _request_records[client_ip] if t > window_start]
-                if len(timestamps) >= settings.RATE_LIMIT_PER_MINUTE:
-                    _request_records[client_ip] = timestamps
-                    return JSONResponse(
-                        status_code=429,
-                        content={"detail": "Too Many Requests: Rate limit exceeded."},
-                        headers={"Retry-After": "60"},
-                    )
-                timestamps.append(now)
-                _request_records[client_ip] = timestamps
-                remaining = max(0, settings.RATE_LIMIT_PER_MINUTE - len(timestamps))
+            rate_error, remaining = self._check_rate_limit(client_ip, now)
+            if rate_error:
+                return rate_error
         else:
             remaining = settings.RATE_LIMIT_PER_MINUTE
 
