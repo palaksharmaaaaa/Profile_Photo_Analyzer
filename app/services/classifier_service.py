@@ -55,7 +55,16 @@ COCO_ANIMAL_CLASSES: dict[int, tuple[str, str]] = {
     23: ("animal", "Giraffe"),
 }
 
+MODEL_NAME_YOLO = "Ultralytics YOLOv8n (COCO)"
+MODEL_NAME_ANIME_FACE = "DeepGHS Anime Face Detector (v1.4n)"
+
 _clip_pipeline = None
+_last_executed_entity_models: list[str] = []
+
+
+def get_last_executed_entity_models() -> list[str]:
+    """Return list of entity models that executed inference without failure in the last call."""
+    return list(_last_executed_entity_models)
 
 
 def get_clip_pipeline():
@@ -188,6 +197,9 @@ def detect_non_human_entities(image_bgr: np.ndarray) -> list[dict[str, Any]]:
     1. Animals & Birds (COCO classes)
     2. Anime & Cartoon faces (DeepGHS model)
     """
+    global _last_executed_entity_models
+    _last_executed_entity_models = []
+
     if image_bgr is None or image_bgr.size == 0:
         return []
 
@@ -205,6 +217,7 @@ def detect_non_human_entities(image_bgr: np.ndarray) -> list[dict[str, Any]]:
             out = yolo_session.run(None, {inp_name: blob})[0]
             animals = _decode_yolo_predictions(out, w, h, settings.ANIMAL_CONF_THRESHOLD, is_anime=False)
             entities.extend(animals)
+            _last_executed_entity_models.append(MODEL_NAME_YOLO)
         except Exception as exc:
             logger.warning(f"Animal detection failed: {exc}")
 
@@ -216,6 +229,7 @@ def detect_non_human_entities(image_bgr: np.ndarray) -> list[dict[str, Any]]:
             out = anime_session.run(None, {inp_name: blob})[0]
             cartoons = _decode_yolo_predictions(out, w, h, settings.ANIME_FACE_CONF_THRESHOLD, is_anime=True)
             entities.extend(cartoons)
+            _last_executed_entity_models.append(MODEL_NAME_ANIME_FACE)
         except Exception as exc:
             logger.warning(f"Anime face detection failed: {exc}")
 

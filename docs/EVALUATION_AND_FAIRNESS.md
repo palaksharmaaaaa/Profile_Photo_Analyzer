@@ -50,7 +50,7 @@ All models are pinned with SHA-256 integrity verification:
 
 ### 4.2 Operational Latency Benchmarks (CPU Execution)
 
-Measured using the reproducible benchmark harness at [`scripts/benchmark_latency.py`](file:///d:/Work/Projects/project-profile-photo-analyzer/scripts/benchmark_latency.py):
+Measured using the reproducible benchmark harness at [`scripts/benchmark_latency.py`](../scripts/benchmark_latency.py):
 ```bash
 python scripts/benchmark_latency.py
 ```

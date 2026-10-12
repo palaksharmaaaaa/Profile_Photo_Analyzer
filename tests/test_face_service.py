@@ -175,6 +175,18 @@ def test_detect_faces_face_app_exception():
         assert detect_faces(img) == []
 
 
+def test_detect_faces_face_app_success():
+    import app.services.face_service as fs
+
+    mock_app = MagicMock()
+    mock_app.get.return_value = [MockFace(bbox=[10, 10, 50, 50])]
+    with patch("app.services.face_service.get_face_app", return_value=mock_app):
+        img = np.ones((100, 100, 3), dtype=np.uint8)
+        res = detect_faces(img)
+        assert len(res) == 1
+        assert fs.get_last_face_detector_model() == fs.MODEL_NAME_INSIGHTFACE
+
+
 def test_get_face_app_success():
     import app.services.face_service as fs
 

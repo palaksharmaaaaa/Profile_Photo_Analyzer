@@ -90,17 +90,19 @@ project-profile-photo-analyzer/
 | `PPA_MAX_CONCURRENT_REQUESTS`| `10` | Concurrency guard per worker process. Returns `503 Service Unavailable`. |
 | `PPA_TRUSTED_PROXIES` | `["127.0.0.1", "::1"]` | Trusted reverse proxy IPs used to inspect `X-Forwarded-For` for client origin. |
 | `PPA_MAX_TRACKED_IPS` | `10000` | Bounded memory ceiling for in-memory rate-limit IP records. |
-| `PPA_ALLOW_HEURISTIC_ACCEPTANCE` | `True` | Automatically accepts real photos passing CV screening heuristics when CLIP is absent. |
-| `PPA_REQUIRE_NEURAL_CLASSIFIER` | `False` | When `True`, routes non-CLIP environments to `MANUAL_REVIEW_REQUIRED`. |
+| `PPA_ALLOW_HEURISTIC_ACCEPTANCE` | `False` | When `False` (default, fail-closed), images without neural CLIP verification require manual review. Set to `True` only in trusted offline environments to allow CV heuristic acceptance. |
+| `PPA_REQUIRE_NEURAL_CLASSIFIER` | `False` | When `True` (enforced automatically in `production` mode), routes non-CLIP environments to `MANUAL_REVIEW_REQUIRED`. |
 
 > [!NOTE]
 > For multi-worker, horizontally scaled clusters, rate-limit state should be backed by a shared Redis cluster or sticky-session routing at the API gateway layer.
+>
+> **Production Photo Acceptance**: In the default installation without `transformers`/CLIP, non-cartoon human photos fail closed to `accepted: false` (`MANUAL_REVIEW_REQUIRED`). For automated photo acceptance without human-in-the-loop review, provision the CLIP model by installing `transformers` (`pip install transformers torch`).
 
 ---
 
 ## Evaluation, Accuracy & Fairness
 
-Empirical accuracy benchmarks on diverse demographic datasets (FairFace, UTKFace, LFW), age regression MAE targets ($\le 4.2$ years), gender parity metrics, fail-closed minor protection, and operational latency budgets (<250 ms p95 on CPU) are detailed in the [Evaluation and Fairness Specification](docs/EVALUATION_AND_FAIRNESS.md).
+Empirical latency benchmarks measured via `scripts/benchmark_latency.py` (~1.5 s p50, ~2.5 s p95 on standard CPU), model optimization guidance (INT8 quantization, ONNX Runtime TensorRT/CUDA acceleration for sub-250 ms p95), and target accuracy/fairness governance specifications (FairFace, UTKFace, LFW targets, age regression MAE $\le 4.2$ years, gender parity metrics, fail-closed minor protection) are detailed in the [Evaluation and Fairness Specification](docs/EVALUATION_AND_FAIRNESS.md).
 
 ---
 

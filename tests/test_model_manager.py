@@ -263,9 +263,10 @@ def test_is_valid_model_file_pinned_hash(tmp_path):
         assert mm.is_valid_model_file(bad_file) is False
 
     # OSError in hash calculation
+    oserror_file = tmp_path / "oserror_model.onnx"
+    oserror_file.write_bytes(b"\x08" + b"err" * 20000)
     with patch("app.services.model_manager._calculate_file_sha256", side_effect=OSError("Read error")):
-        bad_file.touch()
-        assert mm.is_valid_model_file(bad_file) is False
+        assert mm.is_valid_model_file(oserror_file, expected_name=mm.settings.GENDERAGE_MODEL_NAME) is False
 
 
 def test_verify_model_loadable_branches(tmp_path):

@@ -16,7 +16,23 @@ NOT_AVAILABLE = "Not available"
 NOT_DETECTED = "Not Detected"
 UNSURE = "Unsure"
 
+MODEL_NAME_INSIGHTFACE = "InsightFace Face Detector"
+MODEL_NAME_YUNET = "OpenCV YuNet Face Detector (ONNX)"
+MODEL_NAME_GENDERAGE = "InsightFace GenderAge (multitask CNN)"
+
 _face_app = None
+_last_face_detector_model: str | None = None
+_last_demographics_model: str | None = None
+
+
+def get_last_face_detector_model() -> str | None:
+    """Return the name of the face detector model that executed inference during the last call."""
+    return _last_face_detector_model
+
+
+def get_last_demographics_model() -> str | None:
+    """Return the name of the demographic model that executed inference during the last call."""
+    return _last_demographics_model
 
 
 class DetectedFace:
@@ -126,6 +142,9 @@ def detect_faces(image_bgr: np.ndarray) -> list[Any]:
     Detect faces in BGR image using lightweight YuNet ONNX model,
     with seamless fallback to InsightFace if configured.
     """
+    global _last_face_detector_model
+    _last_face_detector_model = None
+
     if image_bgr is None or image_bgr.size == 0:
         return []
 
@@ -135,7 +154,9 @@ def detect_faces(image_bgr: np.ndarray) -> list[Any]:
     face_app = get_face_app()
     if face_app is not None:
         try:
-            return face_app.get(image_bgr)
+            res = face_app.get(image_bgr)
+            _last_face_detector_model = MODEL_NAME_INSIGHTFACE
+            return res
         except Exception as exc:
             logger.warning(f"InsightFace detection failed: {exc}")
 
@@ -146,6 +167,7 @@ def detect_faces(image_bgr: np.ndarray) -> list[Any]:
 
     try:
         _, raw_faces = yunet.detect(image_bgr)
+        _last_face_detector_model = MODEL_NAME_YUNET
         if raw_faces is None or len(raw_faces) == 0:
             return []
 
@@ -249,6 +271,9 @@ def predict_face_demographics(
     Predict age group, continuous age, age confidence, gender presentation,
     and gender confidence for a single face using GenderAge ONNX model.
     """
+    global _last_demographics_model
+    _last_demographics_model = None
+
     # 1. Check face_obj via extract_face_attributes if provided with pre-computed attributes
     if face_obj is not None:
         age_grp, age_conf, gender_str = extract_face_attributes(face_obj)
@@ -270,6 +295,7 @@ def predict_face_demographics(
         blob = resized.astype(np.float32).transpose(2, 0, 1)[np.newaxis, :, :, :]
         inp_name = session.get_inputs()[0].name
         out = session.run(None, {inp_name: blob})[0]
+        _last_demographics_model = MODEL_NAME_GENDERAGE
 
         gender_str, gender_conf = _parse_gender_prediction(out[0][:2])
         age_grp, est_age, age_conf = _parse_age_prediction(out[0][2])

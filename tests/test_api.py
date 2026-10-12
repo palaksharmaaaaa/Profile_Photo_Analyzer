@@ -297,6 +297,28 @@ def test_security_middleware_trusted_proxy_ip():
     req_no_client = Request({"type": "http", "headers": []})
     assert ProductionSecurityMiddleware._resolve_client_ip(req_no_client) == "unknown"
 
+    # Request with trusted peer but no X-Forwarded-For header
+    req_no_forwarded = Request({"type": "http", "client": ("127.0.0.1", 12345), "headers": []})
+    with patch.object(settings, "TRUSTED_PROXIES", ["127.0.0.1"]):
+        assert ProductionSecurityMiddleware._resolve_client_ip(req_no_forwarded) == "127.0.0.1"
+
+    # Request with trusted peer and empty/whitespace X-Forwarded-For header
+    req_whitespace_forwarded = Request(
+        {"type": "http", "client": ("127.0.0.1", 12345), "headers": [(b"x-forwarded-for", b"   ")]}
+    )
+    with patch.object(settings, "TRUSTED_PROXIES", ["127.0.0.1"]):
+        assert ProductionSecurityMiddleware._resolve_client_ip(req_whitespace_forwarded) == "127.0.0.1"
+
+
+def test_analyze_endpoint_no_technical_diagnostics(test_image_bytes):
+    with patch("app.api.routes.analyze_profile_photo_image", return_value={"accepted": True}):
+        response = client.post(
+            "/analyze-profile-photo",
+            files={"file": ("profile.jpg", test_image_bytes, "image/jpeg")},
+        )
+        assert response.status_code == 200
+        assert "technical_diagnostics" not in response.json()
+
 
 def test_rate_limit_pruning():
     import time

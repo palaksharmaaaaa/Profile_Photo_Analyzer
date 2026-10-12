@@ -416,6 +416,49 @@ def test_resolve_executed_models_all_branches():
         assert "DeepGHS Anime Face Detector (v1.4n)" in models
         assert "InsightFace GenderAge (multitask CNN)" in models
 
+    # 3. All stages False (skips detection blocks)
+    models_none_ran = _resolve_executed_models(
+        {"model_executed": None},
+        has_ran_face_detection=False,
+        has_ran_entity_detection=False,
+        has_ran_demographics=False,
+    )
+    assert models_none_ran == ["Image Information & Entropy Analyzer"]
+
+    # 4. Actual execution parameters provided directly (zero overstatement)
+    models_actual = _resolve_executed_models(
+        image_type_clip,
+        has_ran_face_detection=True,
+        has_ran_entity_detection=True,
+        has_ran_demographics=True,
+        actual_face_model="OpenCV YuNet Face Detector (ONNX)",
+        actual_entity_models=["Ultralytics YOLOv8n (COCO)"],
+        actual_demo_model="InsightFace GenderAge (multitask CNN)",
+    )
+    assert "OpenCV YuNet Face Detector (ONNX)" in models_actual
+    assert "Ultralytics YOLOv8n (COCO)" in models_actual
+    assert "InsightFace GenderAge (multitask CNN)" in models_actual
+
+    # 4b. actual_face_model empty string (does not append and does not fallback to session)
+    models_empty_actual = _resolve_executed_models(
+        image_type_clip,
+        has_ran_face_detection=True,
+        actual_face_model="",
+    )
+    assert "YuNet Face Detector (2023mar)" not in models_empty_actual
+
+    # 5. YuNet fallback when face_app is None
+    with (
+        patch("app.services.analyzer.get_last_face_detector_model", return_value=None),
+        patch("app.services.analyzer.get_face_app", return_value=None),
+        patch("app.services.analyzer.get_yunet_detector", return_value=MagicMock()),
+        patch("app.services.analyzer.get_yolo_session", return_value=None),
+        patch("app.services.analyzer.get_anime_face_session", return_value=None),
+        patch("app.services.analyzer.get_genderage_session", return_value=None),
+    ):
+        models_yunet = _resolve_executed_models(image_type_clip, has_ran_face_detection=True)
+        assert "YuNet Face Detector (2023mar)" in models_yunet
+
 
 def test_analyzer_single_human_face_with_non_human_faces(test_image_rgb):
     faces = [MockFace(bbox=[50, 50, 150, 150], age=25.0)]

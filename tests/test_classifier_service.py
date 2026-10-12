@@ -254,6 +254,12 @@ def test_decode_yolo_predictions_animal():
     tensor[0, 3, 0] = 80.0  # h
     # Class 16 = dog (index 4 + 16 = 20)
     tensor[0, 20, 0] = 0.88
+    # Anchor 1: Class 0 = person (not in COCO_ANIMAL_CLASSES)
+    tensor[0, 0, 1] = 100.0
+    tensor[0, 1, 1] = 100.0
+    tensor[0, 2, 1] = 50.0
+    tensor[0, 3, 1] = 50.0
+    tensor[0, 4, 1] = 0.90
 
     res = _decode_yolo_predictions(tensor, 640, 640, 0.35, is_anime=False)
     assert len(res) == 1

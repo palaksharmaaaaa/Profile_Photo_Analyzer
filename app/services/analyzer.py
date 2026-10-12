@@ -8,6 +8,7 @@ from app.services.classifier_service import (
     check_is_non_human_face,
     classify_image_type,
     detect_non_human_entities,
+    get_last_executed_entity_models,
 )
 from app.services.face_service import (
     NOT_AVAILABLE,
@@ -15,6 +16,8 @@ from app.services.face_service import (
     UNSURE,
     detect_faces,
     get_face_app,
+    get_last_demographics_model,
+    get_last_face_detector_model,
     possible_minor_age_group,
     predict_face_demographics,
 )
@@ -54,32 +57,72 @@ MODEL_INFO_ANALYZER = "Image Information & Entropy Analyzer"
 MODEL_SCREENING = "Resilient Image Screening / CLIP"
 
 
-def _resolve_executed_models(
-    image_type: dict[str, Any],
-    has_ran_face_detection: bool = False,
-    has_ran_entity_detection: bool = False,
-    has_ran_demographics: bool = False,
-) -> list[str]:
-    """Dynamically determine the exact computer vision models that executed inference."""
-    executed = [MODEL_INFO_ANALYZER]
-    classifier_model = image_type.get("model_executed")
-    if classifier_model:
-        executed.append(classifier_model)
-
-    if has_ran_face_detection:
+def _append_face_model(
+    executed: list[str],
+    has_ran: bool,
+    actual_model: str | None,
+) -> None:
+    if not has_ran:
+        return
+    model = actual_model if actual_model is not None else get_last_face_detector_model()
+    if model:
+        executed.append(model)
+    elif actual_model is None:
         if get_face_app() is not None:
             executed.append(MODEL_INSIGHTFACE)
         elif get_yunet_detector() is not None:
             executed.append(MODEL_YUNET)
 
-    if has_ran_entity_detection:
+
+def _append_entity_models(
+    executed: list[str],
+    has_ran: bool,
+    actual_models: list[str] | None,
+) -> None:
+    if not has_ran:
+        return
+    models = actual_models if actual_models is not None else get_last_executed_entity_models()
+    if models:
+        executed.extend(models)
+    elif actual_models is None:
         if get_yolo_session() is not None:
             executed.append(MODEL_YOLO)
         if get_anime_face_session() is not None:
             executed.append(MODEL_ANIME_FACE)
 
-    if has_ran_demographics and get_genderage_session() is not None:
+
+def _append_demo_model(
+    executed: list[str],
+    has_ran: bool,
+    actual_model: str | None,
+) -> None:
+    if not has_ran:
+        return
+    model = actual_model if actual_model is not None else get_last_demographics_model()
+    if model:
+        executed.append(model)
+    elif actual_model is None and get_genderage_session() is not None:
         executed.append(MODEL_GENDERAGE)
+
+
+def _resolve_executed_models(
+    image_type: dict[str, Any],
+    has_ran_face_detection: bool = False,
+    has_ran_entity_detection: bool = False,
+    has_ran_demographics: bool = False,
+    actual_face_model: str | None = None,
+    actual_entity_models: list[str] | None = None,
+    actual_demo_model: str | None = None,
+) -> list[str]:
+    """Dynamically determine the exact computer vision models that executed inference without failure."""
+    executed = [MODEL_INFO_ANALYZER]
+    classifier_model = image_type.get("model_executed")
+    if classifier_model:
+        executed.append(classifier_model)
+
+    _append_face_model(executed, has_ran_face_detection, actual_face_model)
+    _append_entity_models(executed, has_ran_entity_detection, actual_entity_models)
+    _append_demo_model(executed, has_ran_demographics, actual_demo_model)
 
     return list(dict.fromkeys(executed))
 
@@ -706,6 +749,9 @@ def analyze_profile_photo_image(
         has_ran_face_detection=True,
         has_ran_entity_detection=True,
         has_ran_demographics=not non_photo,
+        actual_face_model=get_last_face_detector_model(),
+        actual_entity_models=get_last_executed_entity_models(),
+        actual_demo_model=get_last_demographics_model() if (not non_photo) else None,
     )
     diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check, executed)
 
