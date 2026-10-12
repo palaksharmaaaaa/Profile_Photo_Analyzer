@@ -10,6 +10,7 @@ from PIL import Image
 from app.core.config import settings
 from app.services.analyzer import analyze_profile_photo_image
 from app.services.image_utils import sniff_image_magic_bytes
+from app.services.model_manager import check_models_status
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,14 @@ def home():
 
 @router.get("/health")
 def health():
-    """Health check endpoint."""
-    return {"status": "running", "version": settings.APP_VERSION}
+    """Health check endpoint reporting application and model readiness."""
+    models_status = check_models_status()
+    all_ready = all(info["ready"] for info in models_status.values())
+    return {
+        "status": "ready" if all_ready else "degraded",
+        "version": settings.APP_VERSION,
+        "models": models_status
+    }
 
 
 @router.post("/analyze-profile-photo")
@@ -88,7 +95,24 @@ def analyze_profile_photo(file: Annotated[UploadFile, File()]):
         )
 
     try:
+        Image.MAX_IMAGE_PIXELS = settings.MAX_IMAGE_PIXELS
         image = Image.open(io.BytesIO(contents))
+        if image.width > settings.MAX_IMAGE_DIMENSION or image.height > settings.MAX_IMAGE_DIMENSION:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "accepted": False,
+                    "reason": f"Image dimension exceeds {settings.MAX_IMAGE_DIMENSION}px limit ({image.width}x{image.height})."
+                }
+            )
+        if (image.width * image.height) > settings.MAX_IMAGE_PIXELS:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "accepted": False,
+                    "reason": f"Image pixel count exceeds maximum permitted ({settings.MAX_IMAGE_PIXELS} pixels)."
+                }
+            )
         image.load()
         image = image.convert("RGB")
     except (OSError, ValueError) as exc:

@@ -8,14 +8,14 @@ from app.services import model_manager as mm
 
 def test_ensure_model_file_already_exists(tmp_path):
     f = tmp_path / "model.onnx"
-    f.write_bytes(b"dummy_model_bytes")
+    f.write_bytes(b"x" * 60000)
     assert mm.ensure_model_file(f, "http://example.com/model.onnx") is True
 
 
 def test_ensure_model_file_download_success(tmp_path):
     target = tmp_path / "subdir" / "downloaded.onnx"
 
-    mock_resp = io.BytesIO(b"fake_model_content_12345")
+    mock_resp = io.BytesIO(b"x" * 60000)
     mock_resp.status = 200
 
     class DummyContext:
@@ -27,27 +27,67 @@ def test_ensure_model_file_download_success(tmp_path):
     with patch("urllib.request.urlopen", return_value=DummyContext()):
         assert mm.ensure_model_file(target, "http://example.com/downloaded.onnx") is True
         assert target.is_file()
-        assert target.read_bytes() == b"fake_model_content_12345"
+        assert target.stat().st_size == 60000
 
 
 def test_ensure_model_file_download_failure(tmp_path):
     target = tmp_path / "fail.onnx"
+    temp_target = target.with_suffix(".onnx.tmp")
 
-    def fail_with_empty_file(*args, **kwargs):
-        target.touch()
+    def fail_with_temp_file(*args, **kwargs):
+        temp_target.touch()
         raise RuntimeError("Network down")
 
-    with patch("urllib.request.urlopen", side_effect=fail_with_empty_file):
+    with patch("urllib.request.urlopen", side_effect=fail_with_temp_file):
         assert mm.ensure_model_file(target, "http://example.com/fail.onnx") is False
-        assert not target.is_file()
+        assert not temp_target.is_file()
 
 
 def test_ensure_model_file_cleanup_oserror(tmp_path):
     target = tmp_path / "fail_oserror.onnx"
-    target.touch()
+    temp_target = target.with_suffix(".onnx.tmp")
+    temp_target.touch()
     with patch("urllib.request.urlopen", side_effect=RuntimeError("Network down")), \
          patch.object(Path, "unlink", side_effect=OSError("Cannot unlink")):
         assert mm.ensure_model_file(target, "http://example.com/fail.onnx") is False
+
+
+def test_ensure_model_file_removes_truncated_file(tmp_path):
+    f = tmp_path / "truncated.onnx"
+    f.write_bytes(b"short")
+    with patch("urllib.request.urlopen", side_effect=RuntimeError("Download aborted")):
+        assert mm.ensure_model_file(f, "http://example.com/truncated.onnx") is False
+        assert not f.is_file()
+
+
+def test_ensure_model_file_truncated_unlink_oserror(tmp_path):
+    f = tmp_path / "truncated_err.onnx"
+    f.write_bytes(b"short")
+    with patch.object(Path, "unlink", side_effect=OSError("Permission denied")), \
+         patch("urllib.request.urlopen", side_effect=RuntimeError("Aborted")):
+        assert mm.ensure_model_file(f, "http://example.com/truncated_err.onnx") is False
+
+
+def test_ensure_model_file_download_too_small(tmp_path):
+    target = tmp_path / "too_small.onnx"
+    mock_resp = io.BytesIO(b"short")
+    class DummyContext:
+        def __enter__(self):
+            return mock_resp
+        def __exit__(self, *args):
+            pass
+    with patch("urllib.request.urlopen", return_value=DummyContext()):
+        assert mm.ensure_model_file(target, "http://example.com/too_small.onnx") is False
+        assert not target.is_file()
+
+
+def test_check_models_status():
+    status = mm.check_models_status()
+    assert isinstance(status, dict)
+    for model_key in ("yunet", "genderage", "anime_face", "yolov8n"):
+        assert model_key in status
+        assert "ready" in status[model_key]
+        assert "size_bytes" in status[model_key]
 
 
 def test_get_yunet_detector(monkeypatch):

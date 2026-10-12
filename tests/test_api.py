@@ -1,5 +1,6 @@
 import io
 from unittest.mock import patch
+from PIL import Image
 from fastapi.testclient import TestClient
 from app.schemas.analysis import AnalysisResponse, ErrorResponse
 from app import app
@@ -18,8 +19,17 @@ def test_health_endpoint():
     response = client.get("/health")
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "running"
+    assert data["status"] in ("ready", "degraded")
     assert "version" in data
+    assert "models" in data
+
+
+def test_health_endpoint_degraded():
+    with patch("app.api.routes.check_models_status", return_value={"yunet": {"ready": False, "size_bytes": 0}}):
+        response = client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "degraded"
 
 
 def test_analyze_endpoint_valid_image(test_image_bytes):
@@ -121,4 +131,33 @@ def test_app_main_block():
         import runpy
         runpy.run_path("app.py", run_name="__main__")
         mock_uvicorn.assert_called_once()
+
+
+def test_analyze_endpoint_dimension_too_large():
+    img = Image.new("RGB", (5000, 100), color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    payload = buf.getvalue()
+
+    response = client.post(
+        "/analyze-profile-photo",
+        files={"file": ("wide.jpg", payload, "image/jpeg")}
+    )
+    assert response.status_code == 400
+    assert "limit" in response.json()["reason"]
+
+
+def test_analyze_endpoint_pixel_count_too_large():
+    img = Image.new("RGB", (4000, 4001), color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    payload = buf.getvalue()
+
+    response = client.post(
+        "/analyze-profile-photo",
+        files={"file": ("bomb.jpg", payload, "image/jpeg")}
+    )
+    assert response.status_code == 400
+    assert "pixel count" in response.json()["reason"]
+
 

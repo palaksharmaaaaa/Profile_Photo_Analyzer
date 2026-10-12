@@ -99,9 +99,16 @@ def _build_technical_diagnostics(
     width: int,
     height: int,
     format_detected: str,
-    info_check: Dict[str, Any]
+    info_check: Dict[str, Any],
+    models_executed: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """Generate technical metadata and computer vision model diagnostics."""
+    default_models = [
+        "YuNet Face Detector (2023mar)",
+        "InsightFace GenderAge (multitask CNN)",
+        "DeepGHS Anime Face Detector (v1.4n)",
+        "Ultralytics YOLOv8n (COCO)"
+    ]
     return {
         "processing_time_ms": 0.0,
         "image_width": width,
@@ -110,12 +117,7 @@ def _build_technical_diagnostics(
         "entropy_score": round(float(info_check.get("entropy", 0.0)), 2),
         "std_dev_score": round(float(info_check.get("std_dev", 0.0)), 2),
         "laplacian_var": round(float(info_check.get("laplacian_var", 0.0)), 2),
-        "models_executed": [
-            "YuNet Face Detector (2023mar)",
-            "InsightFace GenderAge (multitask CNN)",
-            "DeepGHS Anime Face Detector (v1.4n)",
-            "Ultralytics YOLOv8n (COCO)"
-        ]
+        "models_executed": models_executed if models_executed is not None else default_models
     }
 
 
@@ -138,7 +140,10 @@ def _handle_no_info(
         demographics_done=False,
         demographics_detail=""
     )
-    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check)
+    diagnostics = _build_technical_diagnostics(
+        width, height, format_detected, info_check,
+        models_executed=["Image Information & Entropy Analyzer"]
+    )
 
     return {
         "accepted": False,
@@ -218,7 +223,14 @@ def _handle_no_human_faces(
         demographics_done=False,
         demographics_detail=""
     )
-    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check)
+    executed = [
+        "Image Information & Entropy Analyzer",
+        "Resilient Image Screening / CLIP",
+        "DeepGHS Anime Face Detector (v1.4n)",
+        "Ultralytics YOLOv8n (COCO)",
+        "YuNet Face Detector (2023mar)"
+    ]
+    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check, executed)
 
     return {
         "accepted": False,
@@ -290,7 +302,16 @@ def _handle_multiple_human_faces(
         demographics_done=False,
         demographics_detail=""
     )
-    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check)
+    executed = [
+        "Image Information & Entropy Analyzer",
+        "Resilient Image Screening / CLIP",
+        "DeepGHS Anime Face Detector (v1.4n)",
+        "Ultralytics YOLOv8n (COCO)",
+        "YuNet Face Detector (2023mar)"
+    ]
+    if not non_photo:
+        executed.append("InsightFace GenderAge (multitask CNN)")
+    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check, executed)
 
     return {
         "accepted": False,
@@ -533,11 +554,21 @@ def analyze_profile_photo_image(
     if not info_check["has_information"]:
         return _handle_no_info(image_bgr, info_check, image_type, filename, format_detected)
 
-    non_photo = image_type.get("status") == "NON_PHOTO"
-    type_warning = (
-        f"Warning: this looks like a non-photo image ({image_type.get('display_label', 'Non-photo')}), not a real photograph."
-        if non_photo else ""
-    )
+    status = image_type.get("status")
+    is_non_photo = (status == "NON_PHOTO")
+    is_needs_review = (status == "NEEDS_REVIEW")
+    non_photo = is_non_photo or is_needs_review
+
+    if is_non_photo:
+        type_warning = (
+            f"Warning: this looks like a non-photo image ({image_type.get('display_label', 'Non-photo')}), not a real photograph."
+        )
+    elif is_needs_review:
+        type_warning = (
+            f"Warning: image type classification is uncertain ({image_type.get('display_label', 'Needs review')}). Manual verification required."
+        )
+    else:
+        type_warning = ""
 
     # 2. Multi-Entity and Face Detection
     non_human_entities = detect_non_human_entities(image_bgr)
@@ -587,7 +618,16 @@ def analyze_profile_photo_image(
         demographics_done=True,
         demographics_detail=f"Estimated age group: {age_label}, Gender: {gender_pred}."
     )
-    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check)
+    executed = [
+        "Image Information & Entropy Analyzer",
+        "Resilient Image Screening / CLIP",
+        "DeepGHS Anime Face Detector (v1.4n)",
+        "Ultralytics YOLOv8n (COCO)",
+        "YuNet Face Detector (2023mar)"
+    ]
+    if not non_photo:
+        executed.append("InsightFace GenderAge (multitask CNN)")
+    diagnostics = _build_technical_diagnostics(width, height, format_detected, info_check, executed)
 
     return {
         "accepted": accepted,

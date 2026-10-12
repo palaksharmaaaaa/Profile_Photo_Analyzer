@@ -215,3 +215,44 @@ def test_analyzer_face_matches_non_human_entity(test_image_rgb):
         assert result["other_face_count"] == 1
         assert result["posting_status"] == "NON_PHOTO_WARNING"
 
+
+def test_analyzer_classification_needs_review(test_image_rgb):
+    faces = [MockFace(bbox=[150, 150, 350, 350], age=25.0)]
+    mock_type = {
+        "status": "NEEDS_REVIEW",
+        "top_class": "Ambiguous render",
+        "display_label": "Ambiguous Image",
+        "photo_score": 0.20,
+        "cartoon_score": 0.25,
+    }
+    with patch("app.services.analyzer.classify_image_type", return_value=mock_type), \
+         patch("app.services.analyzer.detect_faces", return_value=faces), \
+         patch("app.services.analyzer.detect_non_human_entities", return_value=[]):
+        result = analyze_profile_photo_image(test_image_rgb)
+        assert result["accepted"] is False
+        assert result["posting_status"] == "NON_PHOTO_WARNING"
+        assert "uncertain" in result["reason"].lower()
+
+
+def test_analyzer_yunet_detected_face_demographics_flow(test_image_rgb):
+    from app.services.face_service import DetectedFace
+    yunet_face = DetectedFace(bbox=[50, 50, 250, 250], det_score=0.96, kps=np.zeros((5, 2)))
+    mock_vis = {
+        "status": "LIKELY_COMPLETE",
+        "reason": "Complete face",
+        "face_box_touches_image_edge": False,
+        "sharpness_score": 85.0,
+        "landmarks_available": True,
+        "landmarks_inside_image": True,
+    }
+    with patch("app.services.analyzer.detect_faces", return_value=[yunet_face]), \
+         patch("app.services.analyzer.detect_non_human_entities", return_value=[]), \
+         patch("app.services.analyzer.assess_face_quality", return_value=mock_vis), \
+         patch("app.services.analyzer.predict_face_demographics", return_value=("27 to 30", 28.0, 0.88, "male-presentation prediction", 0.91)):
+        result = analyze_profile_photo_image(test_image_rgb)
+        assert result["accepted"] is True
+        assert result["estimated_age_group"] == "27 to 30"
+        assert result["gender_presentation_prediction"] == "male-presentation prediction"
+        assert "InsightFace GenderAge (multitask CNN)" in result["technical_diagnostics"]["models_executed"]
+
+

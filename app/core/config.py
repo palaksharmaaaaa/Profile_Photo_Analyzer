@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     APP_TITLE: str = "Profile Photo Analyzer"
     APP_VERSION: str = "3.0.0"
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024  # 10 MB
+    MAX_IMAGE_DIMENSION: int = 4096
+    MAX_IMAGE_PIXELS: int = 16_000_000  # 16 Megapixels (prevents decompression bombs)
     ALLOWED_EXTENSIONS: Set[str] = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
     # Detection & Image Quality Parameters
@@ -38,6 +40,7 @@ class Settings(BaseSettings):
 
     # Model Directories and Paths
     MODELS_DIR: Path = Path(__file__).resolve().parent.parent.parent / "models"
+    MIN_MODEL_FILE_SIZE: int = 50_000  # 50 KB minimum threshold for model integrity
     YUNET_MODEL_NAME: str = "face_detection_yunet_2023mar.onnx"
     GENDERAGE_MODEL_NAME: str = "genderage.onnx"
     ANIME_FACE_MODEL_NAME: str = "anime_face_v1.4_n.onnx"
@@ -57,6 +60,7 @@ class Settings(BaseSettings):
     FORCE_CPU: bool = True
 
     CORS_ORIGINS: List[str] = ["*"]
+    CORS_ALLOW_CREDENTIALS: bool = False
 
 
 settings = Settings()

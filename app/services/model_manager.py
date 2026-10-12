@@ -17,34 +17,86 @@ _anime_session: Optional[ort.InferenceSession] = None
 _yolo_session: Optional[ort.InferenceSession] = None
 
 
-def ensure_model_file(model_path: Path, download_url: str) -> bool:
-    """Ensure that the requested ONNX model file exists locally; download if missing."""
-    if model_path.is_file() and model_path.stat().st_size > 0:
+def is_valid_model_file(model_path: Path, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
+    """Check if model file exists and satisfies minimum byte size."""
+    return model_path.is_file() and model_path.stat().st_size >= min_size
+
+
+def ensure_model_file(model_path: Path, download_url: str, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
+    """Ensure that the requested ONNX model file exists locally; download atomically if missing."""
+    if is_valid_model_file(model_path, min_size):
         return True
 
+    # Remove stale or truncated file if present
+    if model_path.is_file() and model_path.stat().st_size < min_size:
+        try:
+            model_path.unlink()
+        except OSError:
+            pass
+
     model_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = model_path.with_suffix(f"{model_path.suffix}.tmp")
     try:
         logger.info(f"Downloading pre-trained model to {model_path} from {download_url}...")
         req = urllib.request.Request(
             download_url,
             headers={"User-Agent": "ProfilePhotoAnalyzer/3.0"}
         )
-        with urllib.request.urlopen(req, timeout=30) as resp, open(model_path, "wb") as f_out:
+        with urllib.request.urlopen(req, timeout=30) as resp, open(temp_path, "wb") as f_out:
             while True:
                 chunk = resp.read(64 * 1024)
                 if not chunk:
                     break
                 f_out.write(chunk)
-        logger.info(f"Successfully downloaded {model_path.name} ({model_path.stat().st_size} bytes)")
+
+        downloaded_size = temp_path.stat().st_size
+        if downloaded_size < min_size:
+            raise ValueError(f"Downloaded model file is too small ({downloaded_size} bytes < {min_size} bytes)")
+
+        os.replace(temp_path, model_path)
+        logger.info(f"Successfully downloaded {model_path.name} ({downloaded_size} bytes)")
         return True
     except Exception as exc:
         logger.warning(f"Could not download model {model_path.name} from {download_url}: {exc}")
-        if model_path.exists() and model_path.stat().st_size == 0:
+        if temp_path.exists():
             try:
-                model_path.unlink()
+                temp_path.unlink()
             except OSError:
                 pass
         return False
+
+
+def check_models_status() -> dict:
+    """Check readiness of all required local ONNX models."""
+    models = {
+        "yunet": {
+            "name": settings.YUNET_MODEL_NAME,
+            "path": settings.MODELS_DIR / settings.YUNET_MODEL_NAME,
+        },
+        "genderage": {
+            "name": settings.GENDERAGE_MODEL_NAME,
+            "path": settings.MODELS_DIR / settings.GENDERAGE_MODEL_NAME,
+        },
+        "anime_face": {
+            "name": settings.ANIME_FACE_MODEL_NAME,
+            "path": settings.MODELS_DIR / settings.ANIME_FACE_MODEL_NAME,
+        },
+        "yolov8n": {
+            "name": settings.YOLO_MODEL_NAME,
+            "path": settings.MODELS_DIR / settings.YOLO_MODEL_NAME,
+        },
+    }
+    result = {}
+    for key, info in models.items():
+        p: Path = info["path"]
+        ready = is_valid_model_file(p)
+        size_bytes = p.stat().st_size if ready else 0
+        result[key] = {
+            "model_name": info["name"],
+            "ready": ready,
+            "size_bytes": size_bytes
+        }
+    return result
 
 
 def get_yunet_detector(width: int = 640, height: int = 640) -> Optional[cv2.FaceDetectorYN]:

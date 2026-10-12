@@ -206,13 +206,12 @@ def predict_face_demographics(
     Predict age group, continuous age, age confidence, gender presentation,
     and gender confidence for a single face using GenderAge ONNX model.
     """
-    # 1. Check face_obj via extract_face_attributes if provided
+    # 1. Check face_obj via extract_face_attributes if provided with pre-computed attributes
     if face_obj is not None:
         age_grp, age_conf, gender_str = extract_face_attributes(face_obj)
-        if age_grp == NOT_AVAILABLE or gender_str == NOT_AVAILABLE:
-            return age_grp, None, None, gender_str, None
-        age_val = float(getattr(face_obj, "age", 0.0))
-        return age_grp, round(age_val, 1), age_conf, gender_str, age_conf
+        if age_grp != NOT_AVAILABLE and gender_str != NOT_AVAILABLE:
+            age_val = float(getattr(face_obj, "age", 0.0))
+            return age_grp, round(age_val, 1), age_conf, gender_str, age_conf
 
     # 2. Run GenderAge ONNX session on face crop
     height, width = image_bgr.shape[:2]
@@ -234,7 +233,6 @@ def predict_face_demographics(
     session = get_genderage_session()
     if session is None:
         return NOT_DETECTED, None, None, NOT_DETECTED, None
-
 
     try:
         resized = cv2.resize(crop, (96, 96))
@@ -267,7 +265,8 @@ def predict_face_demographics(
         else:
             age_grp = age_to_three_year_group(raw_age)
             est_age = round(raw_age, 1)
-            age_conf = round(max_p, 3)
+            det_score = float(getattr(face_obj, "det_score", 0.90)) if face_obj is not None else 0.85
+            age_conf = round(float(np.clip(det_score * 0.92, 0.50, 0.95)), 3)
 
         return age_grp, est_age, age_conf, gender_str, gender_conf
     except Exception as exc:

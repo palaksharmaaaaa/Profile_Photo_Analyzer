@@ -161,13 +161,33 @@ def test_predict_face_demographics_with_face_obj():
 
 
 def test_predict_face_demographics_bare_face_obj():
-    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    img = np.ones((100, 100, 3), dtype=np.uint8) * 128
     class Bare:
-        pass
-    age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 50, 50], Bare())
-    assert age_grp == "Not available"
-    assert est_age is None
-    assert gender_str == "Not available"
+        det_score = 0.90
+    mock_session = MagicMock()
+    mock_input = MagicMock()
+    mock_input.name = "data"
+    mock_session.get_inputs.return_value = [mock_input]
+    mock_session.run.return_value = [np.array([[2.5, -1.0, 0.24]], dtype=np.float32)]
+
+    with patch("app.services.face_service.get_genderage_session", return_value=mock_session):
+        age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 50, 50], Bare())
+        assert age_grp == "24 to 27"
+        assert est_age == 24.0
+        assert gender_str == "female-presentation prediction"
+        assert age_conf is not None
+        assert gender_conf is not None
+
+
+def test_predict_face_demographics_precomputed_face_obj():
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    class Precomputed:
+        age = 22.0
+        gender = 0
+    age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 50, 50], Precomputed())
+    assert age_grp == "21 to 24"
+    assert est_age == 22.0
+    assert gender_str == "female-presentation prediction"
 
 
 def test_predict_face_demographics_invalid_box():
