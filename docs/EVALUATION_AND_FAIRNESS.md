@@ -94,7 +94,7 @@ with plausible ages), cats, dogs and a bird (animals and birds), a painting and 
 intended), a line illustration, an anatomical diagram, a three-person composite, a person next to a cat, and EXIF-rotated,
 transparent, blank, GIF, TIFF, BMP and WebP inputs. They show the logic works end to end; they do not estimate accuracy.
 
-239 automated tests give 100 % statement and branch coverage of `app/`. That proves the code paths behave as specified
+243 automated tests (242 run by default) give 100 % statement and branch coverage of `app/`. That proves the code paths behave as specified
 (with fakes, and with the real models where built); it says nothing about model accuracy.
 
 ## 2. Claimed by the models' authors (not re-measured)

@@ -16,6 +16,7 @@ from app.services.image_utils import (
     clamp_box,
     crop_square,
     decode_image_bytes,
+    letterbox_top_left,
     pil_to_bgr,
     sniff_image_magic_bytes,
 )
@@ -192,3 +193,13 @@ def test_box_iou_and_center():
     assert box_iou([0, 0, 0, 0], [0, 0, 0, 0]) == 0.0
     assert box_center_inside([40, 40, 60, 60], [0, 0, 100, 100]) is True
     assert box_center_inside([200, 200, 220, 220], [0, 0, 100, 100]) is False
+
+
+def test_letterbox_top_left_keeps_aspect_and_reports_the_scale():
+    image = np.full((100, 200, 3), 255, dtype=np.uint8)
+    canvas, scale = letterbox_top_left(image, 400, pad_value=114)
+    assert canvas.shape == (400, 400, 3) and scale == 2.0
+    assert canvas[0, 0, 0] == 255 and canvas[199, 399, 0] == 255  # the scaled image fills the top 200 rows
+    assert canvas[200, 0, 0] == 114 and canvas[399, 399, 0] == 114  # grey padding below
+    tiny, tiny_scale = letterbox_top_left(np.zeros((1, 1, 3), np.uint8), 8)
+    assert tiny.shape == (8, 8, 3) and tiny_scale == 8.0

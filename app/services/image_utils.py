@@ -172,6 +172,21 @@ def crop_square(image_bgr: np.ndarray, box: list[int], margin: float) -> np.ndar
     return image_bgr[top + pad : bottom + pad, left + pad : right + pad]
 
 
+def letterbox_top_left(image_bgr: np.ndarray, size: int, pad_value: int = 0) -> tuple[np.ndarray, float]:
+    """
+    Fit the image into a ``size`` x ``size`` square without distorting it.
+
+    The resized image sits in the top-left corner and the rest is filled with ``pad_value``. Returns the canvas
+    and the scale factor, so detector boxes can be mapped back with ``box / scale``.
+    """
+    height, width = image_bgr.shape[:2]
+    scale = min(size / height, size / width)
+    new_w, new_h = max(1, int(width * scale)), max(1, int(height * scale))
+    canvas = np.full((size, size, 3), pad_value, dtype=np.uint8)
+    canvas[:new_h, :new_w] = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    return canvas, scale
+
+
 def box_to_percent(box: list[int], width: int, height: int) -> list[float]:
     """A pixel box as [x1, y1, x2, y2] in percent of the image, for positioning overlays in the browser."""
     if width <= 0 or height <= 0:

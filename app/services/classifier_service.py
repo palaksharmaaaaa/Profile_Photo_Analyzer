@@ -12,7 +12,7 @@ import numpy as np
 
 from app.core.config import settings
 from app.services import semantic_service
-from app.services.image_utils import clamp_box, crop_square
+from app.services.image_utils import clamp_box, crop_square, letterbox_top_left
 from app.services.model_manager import MODEL_SPECS, get_session
 
 logger = logging.getLogger(__name__)
@@ -178,12 +178,8 @@ def classify_boxes(image_bgr: np.ndarray, boxes: list[list[int]]) -> list[dict[s
 
 
 def _letterbox(image_bgr: np.ndarray, to_rgb: bool) -> tuple[np.ndarray, float]:
-    """Resize keeping aspect ratio into a top-left aligned DETECTOR_INPUT square padded with grey."""
-    height, width = image_bgr.shape[:2]
-    ratio = min(DETECTOR_INPUT / height, DETECTOR_INPUT / width)
-    new_w, new_h = max(1, int(width * ratio)), max(1, int(height * ratio))
-    canvas = np.full((DETECTOR_INPUT, DETECTOR_INPUT, 3), LETTERBOX_PAD, dtype=np.uint8)
-    canvas[:new_h, :new_w] = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    """Fit the image into the detectors' 640 x 640 square (grey padding), optionally converted to RGB."""
+    canvas, ratio = letterbox_top_left(image_bgr, DETECTOR_INPUT, LETTERBOX_PAD)
     if to_rgb:
         canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
     return canvas, ratio

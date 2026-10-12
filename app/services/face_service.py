@@ -9,7 +9,7 @@ import numpy as np
 
 from app.core.config import settings
 from app.schemas.analysis import NOT_DETECTED, UNSURE
-from app.services.image_utils import box_iou, clamp_box
+from app.services.image_utils import box_iou, clamp_box, letterbox_top_left
 from app.services.model_manager import MODEL_SPECS, get_session, get_yunet_detector, yunet_lock
 
 logger = logging.getLogger(__name__)
@@ -114,10 +114,7 @@ def _scrfd_pass(image_bgr: np.ndarray) -> list[DetectedFace]:
 
     height, width = image_bgr.shape[:2]
     size = _scrfd_input_size(height, width)
-    ratio = min(size / height, size / width)
-    new_w, new_h = max(1, int(width * ratio)), max(1, int(height * ratio))
-    canvas = np.zeros((size, size, 3), dtype=np.uint8)
-    canvas[:new_h, :new_w] = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    canvas, ratio = letterbox_top_left(image_bgr, size)
     blob = ((canvas[:, :, ::-1].astype(np.float32) - 127.5) / 128.0).transpose(2, 0, 1)[np.newaxis]
     outputs = session.run(None, {session.get_inputs()[0].name: blob})
 
@@ -228,15 +225,13 @@ def _crop_rect(image_bgr: np.ndarray, box: list[int] | None, margin: float) -> n
 
 def _letterbox_normalise(crop_bgr: np.ndarray | None) -> np.ndarray:
     """MiVOLO preprocessing: keep aspect, centre on a black 384 square, RGB, ImageNet-normalise. None -> 'no crop'."""
-    if crop_bgr is None:
-        canvas = np.zeros((MIVOLO_SIZE, MIVOLO_SIZE, 3), dtype=np.uint8)
-    else:
+    canvas = np.zeros((MIVOLO_SIZE, MIVOLO_SIZE, 3), dtype=np.uint8)
+    if crop_bgr is not None:
         height, width = crop_bgr.shape[:2]
         ratio = MIVOLO_SIZE / max(height, width)
         new_w, new_h = max(1, round(width * ratio)), max(1, round(height * ratio))
         interp = cv2.INTER_AREA if ratio < 1 else cv2.INTER_LINEAR
         resized = cv2.cvtColor(cv2.resize(crop_bgr, (new_w, new_h), interpolation=interp), cv2.COLOR_BGR2RGB)
-        canvas = np.zeros((MIVOLO_SIZE, MIVOLO_SIZE, 3), dtype=np.uint8)
         top, left = (MIVOLO_SIZE - new_h) // 2, (MIVOLO_SIZE - new_w) // 2
         canvas[top : top + new_h, left : left + new_w] = resized
     return ((canvas.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD).transpose(2, 0, 1)

@@ -204,8 +204,8 @@ python scripts/analyze_folder.py <folder> --out results.csv
 python scripts/evaluate_fairface.py --csv fairface_label_val.csv --images <folder>
 ```
 
-239 tests; statement and branch coverage of `app/` is 100 %. Tests that need the built models skip themselves when
-the models are absent. Set `PPA_TEST_IMAGES_DIR` to also smoke-test a small folder of your own photos (it analyzes
+243 tests (242 run by default); statement and branch coverage of `app/` is 100 %. Tests that need the built models
+skip themselves when the models are absent. Set `PPA_TEST_IMAGES_DIR` to also smoke-test a small folder of your own photos (it analyzes
 every image in the folder, so keep it small).
 
 ```text
