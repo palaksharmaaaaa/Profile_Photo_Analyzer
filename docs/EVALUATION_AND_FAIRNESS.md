@@ -1,83 +1,80 @@
-# Evaluation, Accuracy & Fairness Specification
+# Evaluation status (Profile Photo Analyzer v4.0.0)
 
-## 1. Executive Summary
-This document establishes the evaluation benchmarks, fairness audit methodology, and operational latency standards for the **Profile Photo Analyzer (v3.0.0)**. While automated unit tests enforce 100% statement and branch coverage, model operational integrity requires continuous empirical validation against real-world, demographically diverse facial datasets.
+This document separates **what has been measured**, **what is only claimed by a model's author**, and **what has not
+been measured at all**. Nothing here is a target presented as a result.
 
----
+## 1. Measured in this repository
 
-## 2. Benchmark Datasets & Validation Protocols
+### Latency (CPU, one machine, one portrait)
 
-| Dataset | Sample Size | Primary Focus | Distribution Metrics |
-| :--- | :--- | :--- | :--- |
-| **FairFace** | 10,834 balanced test images | Balanced Demographic Representation | 7 Ethnic groups, 9 Age groups, Gender balance |
-| **UTKFace** | 23,708 cropped faces | Continuous Age Regression & Gender | Age span 0–116 years, multi-ethnic annotations |
-| **LFW (Labeled Faces in the Wild)** | 13,233 images | Real-World Photo Quality & Poses | Unconstrained natural photography |
+Command: `python scripts/benchmark_latency.py --image <portrait> --iterations 12`. Image: a public-domain portrait,
+analysed at 960 x 1237 px. Hardware: Windows 11, 14 logical CPUs, Python 3.14.5, onnxruntime 1.31.0, 4 ONNX threads.
+The machine was not isolated, so the spread is large; treat the figures as an order of magnitude, not a guarantee.
 
----
+| Stage | p50 (ms) | p90 (ms) |
+| :--- | ---: | ---: |
+| Information check | 4.6 | 4.9 |
+| Image type (SigLIP2, whole image) | 43.9 | 46.7 |
+| Face detection (YuNet) | 32.3 | 33.7 |
+| Animal + anime detection (YOLOX-S + DeepGHS) | 202.7 | 218.6 |
+| Real-human verification (one crop, SigLIP2) | 45.1 | 49.3 |
+| Age + gender (6 views) | 287.5 | 332.3 |
+| **End to end** (includes decoding the response images) | **1570** | **2787** (min 1013) |
 
-## 3. Accuracy & Fairness Targets
+Two measured facts that drove design choices: ONNX Runtime's default "all cores" threading was about 4x slower than 4
+threads on this CPU (about 10 s vs 2 s for the same work), and INT8 SigLIP2 output depends on batch composition because
+activations are quantised per batch, so crops are embedded one at a time (covered by an integration test).
 
-### 3.1 Age Estimation (Continuous & 3-Year Buckets)
-- **Target Overall MAE**: $\le 4.2$ years Mean Absolute Error across all ages 18–65.
-- **Minor Classification Sensitivity**: $\ge 98.5\%$ detection rate for faces aged $\le 17$ years.
-- **Fail-Closed Threshold**: Any prediction yielding age $\le 18$ automatically flags `AGE_VERIFICATION_REQUIRED` to eliminate minor-safety false negatives.
+### Quantisation drift
+`scripts/build_models.py` compares the INT8 age/gender model with the fp32 original on random input before it will
+write the model: mean absolute difference 0.52 years (age) and 0.03 (gender probability) on the build run. Random input
+is weak evidence; it guards against a broken conversion, not against accuracy loss on real faces.
 
-### 3.2 Gender Presentation Prediction
-- **Target Accuracy**: $\ge 94.0\%$ macro-accuracy on frontal, centered profile images.
-- **Surety Threshold**: Raw softmax probability difference $\ge 0.60$; scores below this mark are classified as `Unsure` rather than forced binary decisions.
+### Qualitative smoke tests (not an evaluation)
+About a dozen public-domain/open images were run through the real pipeline during development: historical portraits
+(counted as real humans with plausible ages and genders), cats, dogs, a bird (counted as animals/birds), a painting
+and a retouched painting (reported `Unsure`, as intended), a line illustration, an anatomical diagram, a three-person
+composite, a person next to a cat, EXIF-rotated, transparent, blank, GIF/TIFF/BMP/WebP inputs. These show the logic
+works end to end; they do not estimate accuracy.
 
-### 3.3 Demographic Parity & Fairness Auditing
-- **Four-Fifths Rule (EEOC Standard)**: The Demographic Parity Ratio (DPR) across ethnic, age, and presentation subgroups must satisfy:
-  $$\text{DPR} = \frac{\min_{g \in G} \text{F1}(g)}{\max_{g \in G} \text{F1}(g)} \ge 0.80$$
-- **Disparity Remediation**: Subgroups falling below an 80% parity threshold must trigger model re-calibration or manual review routing (`MANUAL_REVIEW_REQUIRED`).
+### Automated tests
+214 tests, 100 % statement and branch coverage of `app/`. This proves the code paths run and behave as specified under
+fakes and, where models are built, real models. It says nothing about model accuracy.
 
----
+## 2. Claimed by upstream authors (not re-measured)
 
-## 4. Model Artifact Specifications & Benchmark Latency
+| Claim | Source | Caveat |
+| :--- | :--- | :--- |
+| Gender accuracy 94.3 %, age MAE 4.5 years | model card of `abhilash88/age-gender-prediction` | Self-reported on UTKFace, the training distribution. Same card: weaker for children (78.4 % gender at ages 5-12) and 70+. |
+| YuNet / YOLOX / SigLIP2 benchmark numbers | their papers and repositories | Not re-run here. |
 
-### 4.1 Local Checked-in Model Artifacts
-All models are pinned with SHA-256 integrity verification:
+## 3. Not measured
 
-| Model Role | Artifact Filename | Exact Size (Bytes) | Size (MiB / MB) | SHA-256 Status |
-| :--- | :--- | :--- | :--- | :--- |
-| **Human Face Detection** | `face_detection_yunet_2023mar.onnx` | 232,589 bytes | 0.22 MiB (0.23 MB) | Verified Pinned |
-| **Gender & Age Estimation** | `genderage.onnx` | 1,322,532 bytes | 1.26 MiB (1.32 MB) | Verified Pinned |
-| **Anime / Comic Detection** | `anime_face_v1.4_n.onnx` | 12,102,558 bytes | 11.54 MiB (12.10 MB) | Verified Pinned |
-| **Object / Animal Detection** | `yolov8n.onnx` | 12,769,720 bytes | 12.18 MiB (12.77 MB) | Verified Pinned |
-| **Total Artifact Storage** | *All 4 Models Combined* | **26,427,399 bytes** | **25.20 MiB (26.43 MB)** | **All Intact** |
+* Age and gender accuracy on data the model did not see, overall or per demographic group.
+* Minor-detection recall and adult false-alarm rate.
+* Precision/recall of the real-human vs non-human verification, and its thresholds (`HUMAN_MIN_PROB`,
+  `HUMAN_MIN_MARGIN`, `NONHUMAN_MAX_HUMAN_PROB`), which were set by inspection on a handful of images.
+* The `AGE_MODEL_MAE_YEARS = 4.5` assumption used to turn the author's MAE into an interval; the 80 % interval is only
+  as good as that assumption (a Gaussian error with sigma = 1.25 x MAE).
+* Any fairness metric. The earlier version of this document listed accuracy and "demographic parity" targets that were
+  never measured; they have been removed rather than left to read as results.
 
----
+## 4. How to measure it
 
-### 4.2 Operational Latency Benchmarks (CPU Execution)
-
-Measured using the reproducible benchmark harness at [`scripts/benchmark_latency.py`](../scripts/benchmark_latency.py):
 ```bash
-python scripts/benchmark_latency.py
+python scripts/evaluate_fairface.py --csv fairface_label_val.csv --images <folder> --json report.json
 ```
 
-Empirical results across 15 iterations on standard x86_64 CPU hardware with 600x600 portrait inputs:
+FairFace (CC BY 4.0) provides age bins, gender and race for pre-cropped faces and is unseen by this model (it was trained
+on UTKFace). The script reports gender accuracy among answered faces and the `Unsure` rate, how often the estimated age
+falls inside the labelled bin, MAE against the bin centre, minor recall and the false-flag rate for faces labelled 30+,
+all overall and per race group. Compare per-group results before deploying; large gaps mean the output should not be used
+without human review for the affected groups.
 
-| Pipeline Stage | Model / Heuristic | min | mean | p50 (Median) | p90 | p95 | max |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Entropy & Information Check** | OpenCV (Laplacian / Shannon) | 20.91 ms | 115.96 ms | 116.62 ms | 200.12 ms | 204.41 ms | 204.41 ms |
-| **Biological Diagram Check** | High-sparsity edge detector | 18.16 ms | 32.87 ms | 30.08 ms | 45.79 ms | 50.48 ms | 50.48 ms |
-| **Cartoon & Palette Screening** | Flat variance & outline analysis | 50.83 ms | 99.47 ms | 99.41 ms | 128.79 ms | 143.79 ms | 143.79 ms |
-| **Heuristic Pipeline Screener** | Composite CV classifier | 102.98 ms | 151.06 ms | 155.81 ms | 177.80 ms | 193.20 ms | 193.20 ms |
-| **YuNet Face Detection** | OpenCV FaceDetectorYN ONNX | 119.73 ms | 207.26 ms | 213.08 ms | 279.51 ms | 319.20 ms | 319.20 ms |
-| **Non-Human Entity Screening** | YOLOv8n + Anime Face v1.4n | 1,248.99 ms | 1,987.62 ms | 1,505.35 ms | 2,905.54 ms | 3,358.54 ms | 3,358.54 ms |
-| **Demographics Estimation** | InsightFace GenderAge ONNX | 1.09 ms | 14.10 ms | 13.56 ms | 19.98 ms | 25.45 ms | 25.45 ms |
-| **End-to-End Analysis Pipeline** | **Complete Orchestrated Flow** | **1,517.56 ms** | **1,708.88 ms** | **1,644.51 ms** | **1,851.35 ms** | **2,573.21 ms** | **2,573.21 ms** |
+## 5. Why 3-year brackets cannot be certain
 
----
-
-### 4.3 Multi-Worker & Multi-Pod Architectural Deployment Guidance
-The built-in rate-limiting and concurrency controls are process-local (`RLock` guarded in memory). For distributed, multi-worker deployments (e.g., `uvicorn --workers 4` or Kubernetes horizontal pod autoscaling):
-- **Gateway Enforcement**: Recommended practice is to enforce distributed rate limits at the API Gateway or reverse proxy layer (e.g., Cloudflare, NGINX `limit_req_zone`, or Envoy Global Rate Limiting).
-- **Process-Local Defense-in-Depth**: The application-level rate limiter serves as node-level protection against local resource exhaustion.
-
----
-
-## 5. Ongoing Monitoring & Governance
-1. **Model Drift & Artifact Verification**: All ONNX artifacts are validated via SHA-256 digests on startup.
-2. **Periodic Dataset Audits**: Quarterly re-evaluation against synthetic generation detection and emerging deepfake artifacts.
-3. **Fail-Closed Policy**: Ambiguous or uncertain classifications route to `MANUAL_REVIEW_REQUIRED` rather than failing open.
+With an age error of several years, a 3-year bracket is narrower than the uncertainty. The service therefore reports the
+bracket containing the point estimate together with an 80 % range and the probability that the true age is in the bracket
+(about 15-20 % for an adult in practice). `Unsure` is returned when the views of the same face disagree by more than
+`AGE_UNSURE_VIEW_STD` years, when the estimate is outside 1-90 years, or when the face is too small or turned to estimate.
+For policy decisions use `p_under_18`, not the bracket.

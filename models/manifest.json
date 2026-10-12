@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "onnxruntime_version": "1.31.0",
+  "files": {
+    "siglip2_base_vision_int8.onnx": {
+      "sha256": "0dd31785a2713f1113ef2272472165c69d580473dae38d7b47568ac587795e70",
+      "size": 94553333
+    },
+    "age_gender_vit_int8.onnx": {
+      "sha256": "e07fdafd1adf1b896c275cd0af382529363edbaea3011ffe20fd73b8eaff86f8",
+      "size": 88934566
+    }
+  },
+  "label_bank": {
+    "file": "label_embeddings.npz",
+    "sha256": "ef8aa1a471b9ea0ee00a0218a6bf10ffc6e8df507b8a6599926cbe66e39a1f20"
+  },
+  "upstream_sources": {
+    "sig_vision_int8.onnx": "0dd31785a2713f1113ef2272472165c69d580473dae38d7b47568ac587795e70",
+    "sig_text_int8.onnx": "3a0603d3a00c05a80a6ded4743c16aaac7b1e62cdcc7e362e7ce418659b96400",
+    "tokenizer.json": "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322",
+    "agegender_fp32.onnx": "0c35c868ea8ffba6d5fe727c1a6b82d9da600e690342d58ca268270560e28304"
+  },
+  "quantisation_validation": {
+    "mean_abs_age_drift_years": 0.515,
+    "mean_abs_gender_drift": 0.0302
+  }
+}

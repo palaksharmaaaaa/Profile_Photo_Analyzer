@@ -1,150 +1,145 @@
 import numpy as np
+import pytest
 
-from app.services.quality_service import assess_face_quality
+from app.core.config import settings
+from app.services.quality_service import (
+    assess_face_quality,
+    check_image_information,
+    estimate_yaw_ratio,
+)
 
 
-def test_quality_service_complete_face():
-    # 500x500 image with centered texture
-    image = np.ones((500, 500, 3), dtype=np.uint8) * 128
-    # High frequency texture in center for sharpness
-    image[150:350, 150:350] = np.random.randint(40, 200, (200, 200, 3), dtype=np.uint8)
+def textured(size=600, seed=0):
+    """Mid-grey image with a noisy square 'face' in the middle."""
+    rng = np.random.default_rng(seed)
+    image = np.full((size, size, 3), 128, dtype=np.uint8)
+    lo, hi = size // 3, 2 * size // 3
+    image[lo:hi, lo:hi] = rng.integers(60, 190, (hi - lo, hi - lo, 3), dtype=np.uint8)
+    return image
 
-    face_box = [150, 150, 350, 350]
-    landmarks = np.array([[200, 200], [300, 200], [250, 250], [220, 300], [280, 300]])
 
-    result = assess_face_quality(image, face_box, landmarks)
+FRONTAL = np.array([[250, 260], [350, 260], [300, 300], [260, 350], [340, 350]], dtype=np.float32)
+
+
+def test_information_rejects_empty_array():
+    result = check_image_information(np.zeros((0, 0, 3), dtype=np.uint8))
+    assert result["has_information"] is False
+
+
+def test_information_rejects_solid_color():
+    result = check_image_information(np.full((200, 200, 3), 200, dtype=np.uint8))
+    assert result["has_information"] is False
+    assert "no visual information" in result["reason"]
+
+
+def test_information_rejects_near_uniform_image():
+    image = np.full((200, 200, 3), 100, dtype=np.uint8)
+    image[0, 0] = 101
+    assert check_image_information(image)["has_information"] is False
+
+
+def test_information_accepts_textured_image():
+    result = check_image_information(textured())
+    assert result["has_information"] is True
+    assert result["entropy"] > settings.MIN_IMAGE_ENTROPY
+
+
+def test_information_downscales_large_images():
+    big = np.repeat(np.repeat(textured(300), 4, axis=0), 4, axis=1)  # 1200x1200
+    assert check_image_information(big)["has_information"] is True
+
+
+def test_yaw_ratio_frontal_is_near_zero():
+    assert abs(estimate_yaw_ratio(FRONTAL)) < 0.05
+
+
+def test_yaw_ratio_grows_when_turned():
+    turned = FRONTAL.copy()
+    turned[2, 0] = 360  # nose far to the right of the eye midpoint
+    assert estimate_yaw_ratio(turned) > 0.5
+
+
+@pytest.mark.parametrize("points", [None, np.zeros((2, 2)), np.zeros((5,)), np.array([[1, 1], [1, 1], [5, 5]])])
+def test_yaw_ratio_unavailable(points):
+    assert estimate_yaw_ratio(points) is None
+
+
+def test_quality_complete_for_good_frontal_face():
+    result = assess_face_quality(textured(), [200, 200, 400, 400], FRONTAL)
     assert result["status"] == "LIKELY_COMPLETE"
-    assert result["face_box_touches_image_edge"] is False
-    assert result["landmarks_available"] is True
-    assert result["landmarks_inside_image"] is True
-    assert result["sharpness_score"] > 30.0
+    assert result["demographics_usable"] is True
+    assert result["demographics_caveat"] is None
+    assert result["face_min_side_px"] == 200
 
 
-def test_quality_service_touches_edge():
-    image = np.ones((500, 500, 3), dtype=np.uint8) * 128
-    # Face touches top-left border
-    face_box = [2, 2, 200, 200]
-    landmarks = np.array([[50, 50], [100, 50], [75, 75], [60, 100], [90, 100]])
+def test_quality_invalid_box():
+    result = assess_face_quality(textured(), [100, 100, 100, 100], FRONTAL)
+    assert result["status"] == "UNCERTAIN"
+    assert result["demographics_usable"] is False
 
-    result = assess_face_quality(image, face_box, landmarks)
+
+def test_quality_flags_edge_touching_face():
+    result = assess_face_quality(textured(), [0, 100, 150, 300], FRONTAL)
     assert result["status"] == "PARTIAL_OR_CROPPED"
     assert result["face_box_touches_image_edge"] is True
 
 
-def test_quality_service_blurry():
-    # Uniform smooth image (Laplacian variance near 0)
-    image = np.ones((500, 500, 3), dtype=np.uint8) * 128
-    face_box = [100, 100, 300, 300]
-    landmarks = np.array([[150, 150], [250, 150], [200, 200], [170, 250], [230, 250]])
+def test_quality_flags_dark_and_bright_faces():
+    dark = np.full((600, 600, 3), 10, dtype=np.uint8)
+    dark[200:400, 200:400] = np.random.default_rng(1).integers(0, 30, (200, 200, 3), dtype=np.uint8)
+    assert "underexposed" in assess_face_quality(dark, [200, 200, 400, 400], FRONTAL)["reason"]
 
-    result = assess_face_quality(image, face_box, landmarks)
-    assert result["status"] == "UNCERTAIN"
-    assert "blurry" in result["reason"].lower()
-
-
-def test_quality_service_dark_lighting():
-    # Nearly black image with slight pixel variation
-    image = np.ones((500, 500, 3), dtype=np.uint8) * 15
-    image[100:300, 100:300] = np.random.randint(5, 25, (200, 200, 3), dtype=np.uint8)
-    face_box = [100, 100, 300, 300]
-    landmarks = np.array([[150, 150], [250, 150], [200, 200], [170, 250], [230, 250]])
-
-    result = assess_face_quality(image, face_box, landmarks)
-    assert result["status"] == "UNCERTAIN"
-    assert "poor lighting" in result["reason"].lower() or "underexposed" in result["reason"].lower()
+    bright = np.full((600, 600, 3), 250, dtype=np.uint8)
+    bright[200:400, 200:400] = np.random.default_rng(2).integers(235, 256, (200, 200, 3), dtype=np.uint8)
+    assert "overexposed" in assess_face_quality(bright, [200, 200, 400, 400], FRONTAL)["reason"]
 
 
-def test_quality_service_too_small_face():
-    # 1000x1000 image with tiny 20x20 face box
-    image = np.ones((1000, 1000, 3), dtype=np.uint8) * 128
-    image[100:120, 100:120] = np.random.randint(50, 200, (20, 20, 3), dtype=np.uint8)
-    face_box = [100, 100, 120, 120]
-    landmarks = np.array([[105, 105], [115, 105], [110, 110], [107, 115], [113, 115]])
+def test_quality_flags_tiny_and_huge_faces():
+    tiny = assess_face_quality(textured(1200), [500, 500, 530, 530], FRONTAL)
+    assert "too small" in tiny["reason"]
+    assert tiny["demographics_usable"] is False
+    assert "only 30px" in tiny["demographics_caveat"]
 
-    result = assess_face_quality(image, face_box, landmarks)
-    assert result["status"] == "UNCERTAIN"
-    assert "too small" in result["reason"].lower()
+    huge = assess_face_quality(textured(600), [20, 20, 590, 590], FRONTAL)
+    assert huge["status"] in ("UNCERTAIN", "PARTIAL_OR_CROPPED")
 
 
-def test_quality_service_overexposed():
-    image = np.ones((500, 500, 3), dtype=np.uint8) * 250
-    face_box = [100, 100, 300, 300]
-    landmarks = np.array([[150, 150], [250, 150], [200, 200], [170, 250], [230, 250]])
-
-    result = assess_face_quality(image, face_box, landmarks)
-    assert result["status"] == "UNCERTAIN"
-    assert "overexposed" in result["reason"].lower() or "washed out" in result["reason"].lower()
+def test_quality_flags_huge_face_that_is_not_at_edge(monkeypatch):
+    monkeypatch.setattr(settings, "MAX_FACE_AREA_RATIO", 0.05)
+    result = assess_face_quality(textured(), [200, 200, 400, 400], FRONTAL)
+    assert "fills almost the whole frame" in result["reason"]
 
 
-def test_quality_service_landmarks_outside():
-    image = np.ones((500, 500, 3), dtype=np.uint8) * 128
-    image[100:300, 100:300] = np.random.randint(50, 200, (200, 200, 3), dtype=np.uint8)
-    face_box = [100, 100, 300, 300]
-    # Landmark coordinates outside image boundary
-    landmarks = np.array([[150, 150], [600, 150], [200, 200], [170, 250], [230, 250]])
-
-    result = assess_face_quality(image, face_box, landmarks)
-    assert result["status"] == "UNCERTAIN"
-    assert "landmarks" in result["reason"].lower()
+def test_quality_flags_blur_independent_of_resolution():
+    image = np.full((600, 600, 3), 128, dtype=np.uint8)
+    image[200:400, 200:400] = 140  # smooth patch: no detail
+    result = assess_face_quality(image, [200, 200, 400, 400], FRONTAL)
+    assert "blurry" in result["reason"]
 
 
-def test_quality_service_invalid_box():
-    image = np.ones((500, 500, 3), dtype=np.uint8) * 128
-    face_box = [100, 100, 100, 100]  # Zero width and height
-
-    result = assess_face_quality(image, face_box, None)
-    assert result["status"] == "UNCERTAIN"
-    assert "invalid" in result["reason"].lower()
-
-
-def test_quality_service_landmarks_none():
-    image = np.ones((500, 500, 3), dtype=np.uint8) * 128
-    image[100:300, 100:300] = np.random.randint(50, 200, (200, 200, 3), dtype=np.uint8)
-    face_box = [100, 100, 300, 300]
-    result = assess_face_quality(image, face_box, landmarks=None)
-    assert result["status"] == "UNCERTAIN"
-    assert result["landmarks_available"] is False
-
-
-def test_quality_service_landmarks_malformed_shape():
-    image = np.ones((500, 500, 3), dtype=np.uint8) * 128
-    image[100:300, 100:300] = np.random.randint(50, 200, (200, 200, 3), dtype=np.uint8)
-    face_box = [100, 100, 300, 300]
-    landmarks = np.array([1, 2, 3])  # 1D array
-    result = assess_face_quality(image, face_box, landmarks=landmarks)
-    assert result["status"] == "UNCERTAIN"
+def test_quality_requires_landmarks():
+    assert "landmarks" in assess_face_quality(textured(), [200, 200, 400, 400], None)["reason"].lower()
+    outside = FRONTAL.copy()
+    outside[0] = [-5, 10]
+    assert "landmarks" in assess_face_quality(textured(), [200, 200, 400, 400], outside)["reason"].lower()
+    malformed = np.array([1.0, 2.0, 3.0])
+    result = assess_face_quality(textured(), [200, 200, 400, 400], malformed)
+    assert result["landmarks_available"] is True
     assert result["landmarks_inside_image"] is False
 
 
-def test_check_image_information_valid():
-    from app.services.quality_service import check_image_information
-
-    img = np.random.randint(20, 220, (100, 100, 3), dtype=np.uint8)
-    res = check_image_information(img)
-    assert res["has_information"] is True
-    assert res["entropy"] > 0.5
-
-
-def test_check_image_information_blank_or_solid():
-    from app.services.quality_service import check_image_information
-
-    blank = np.zeros((100, 100, 3), dtype=np.uint8)
-    res = check_image_information(blank)
-    assert res["has_information"] is False
-    assert "no visual information" in res["reason"]
-
-    solid = np.full((100, 100, 3), (120, 120, 120), dtype=np.uint8)
-    res_solid = check_image_information(solid)
-    assert res_solid["has_information"] is False
+def test_quality_flags_head_turn():
+    turned = FRONTAL.copy()
+    turned[2, 0] = 365
+    result = assess_face_quality(textured(), [200, 200, 400, 400], turned)
+    assert "turned" in result["reason"]
+    assert result["demographics_usable"] is False
+    assert "turned too far" in result["demographics_caveat"]
 
 
-def test_check_image_information_empty():
-    from app.services.quality_service import check_image_information
-
-    empty = np.zeros((0, 0, 3), dtype=np.uint8)
-    res = check_image_information(empty)
-    assert res["has_information"] is False
-    assert res["entropy"] == 0.0
-
-    none_res = check_image_information(None)
-    assert none_res["has_information"] is False
+def test_quality_moderate_turn_is_flagged_but_still_usable_for_demographics():
+    slight = FRONTAL.copy()
+    slight[2, 0] = 345  # yaw ratio 0.45: not frontal, but within what the age model tolerates
+    result = assess_face_quality(textured(), [200, 200, 400, 400], slight)
+    assert result["status"] == "UNCERTAIN"
+    assert result["demographics_usable"] is True

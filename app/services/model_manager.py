@@ -1,7 +1,12 @@
+"""Model registry, integrity verification, lazy loading and (where licensed) downloading of ONNX models."""
+
 import hashlib
+import json
 import logging
 import os
+import threading
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -11,133 +16,201 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-MODEL_PINNED_HASHES: dict[str, str] = {
-    settings.YUNET_MODEL_NAME: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
-    settings.GENDERAGE_MODEL_NAME: "4fde69b1c810857b88c64a335084f1c3fe8f01246c9a191b48c7bb756d6652fb",
-    settings.ANIME_FACE_MODEL_NAME: "fd860b650a4377046842c3cd80d01b0b408bdfbdb4acee5759630f82c6ef04a9",
-    settings.YOLO_MODEL_NAME: "dd48a79dd7fec8ca25fde4eca742ff7bca23b27e2e903eb23bc1d9f83a459bd2",
+DEFAULT_ORT_THREADS = 4
+MANIFEST_NAME = "manifest.json"
+LABEL_BANK_NAME = "label_embeddings.npz"
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    """A model the pipeline can use.
+
+    ``url`` is set only for models that can be fetched as-is. Models derived locally (quantised or
+    pre-embedded) have ``url=None`` and are produced by ``scripts/build_models.py``; their SHA-256 is
+    then taken from ``models/manifest.json`` written by that script.
+    """
+
+    key: str
+    filename: str
+    display_name: str
+    role: str
+    license: str
+    url: str | None = None
+    sha256: str | None = None
+
+
+MODEL_SPECS: dict[str, ModelSpec] = {
+    "yunet": ModelSpec(
+        key="yunet",
+        filename="face_detection_yunet_2023mar.onnx",
+        display_name="OpenCV YuNet Face Detector (2023mar)",
+        role="face candidate detection",
+        license="MIT (OpenCV Zoo)",
+        url="https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx",
+        sha256="8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+    ),
+    "anime_face": ModelSpec(
+        key="anime_face",
+        filename="anime_face_v1.4_n.onnx",
+        display_name="DeepGHS Anime Face Detector (v1.4n)",
+        role="anime/cartoon face localisation",
+        license="MIT (model card)",
+        url="https://huggingface.co/deepghs/anime_face_detection/resolve/main/face_detect_v1.4_n/model.onnx",
+        sha256="fd860b650a4377046842c3cd80d01b0b408bdfbdb4acee5759630f82c6ef04a9",
+    ),
+    "yolox": ModelSpec(
+        key="yolox",
+        filename="yolox_s.onnx",
+        display_name="YOLOX-S (COCO)",
+        role="animal and bird detection",
+        license="Apache-2.0 (Megvii YOLOX)",
+        url="https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx",
+        sha256="c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
+    ),
+    "siglip_vision": ModelSpec(
+        key="siglip_vision",
+        filename="siglip2_base_vision_int8.onnx",
+        display_name="SigLIP2 Base/16-224 vision tower (INT8)",
+        role="real-human vs non-human face and image-type verification",
+        license="Apache-2.0 (Google SigLIP2)",
+    ),
+    "age_gender": ModelSpec(
+        key="age_gender",
+        filename="age_gender_vit_int8.onnx",
+        display_name="ViT Age/Gender (abhilash88, INT8)",
+        role="age regression and gender classification",
+        license="Apache-2.0 per model card; trained on UTKFace (non-commercial dataset terms - see NOTICE.md)",
+    ),
 }
 
-_validation_cache: dict[str, tuple[float, bool]] = {}
+_lock = threading.RLock()
+_validation_cache: dict[str, tuple[tuple[int, int], bool]] = {}
 _yunet_detector: cv2.FaceDetectorYN | None = None
 _yunet_size: tuple[int, int] = (0, 0)
-_genderage_session: ort.InferenceSession | None = None
-_anime_session: ort.InferenceSession | None = None
-_yolo_session: ort.InferenceSession | None = None
+_sessions: dict[str, ort.InferenceSession] = {}
+
+
+def model_path(key: str) -> Path:
+    return settings.MODELS_DIR / MODEL_SPECS[key].filename
+
+
+def _load_manifest() -> dict[str, dict]:
+    path = settings.MODELS_DIR / MANIFEST_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data.get("files", {}) if isinstance(data, dict) else {}
+    except OSError, ValueError:
+        return {}
+
+
+def expected_sha256(filename: str) -> str | None:
+    """Pinned SHA-256 for a model file: from the registry, otherwise from the build manifest."""
+    for spec in MODEL_SPECS.values():
+        if spec.filename == filename and spec.sha256:
+            return spec.sha256
+    entry = _load_manifest().get(filename)
+    return entry.get("sha256") if isinstance(entry, dict) else None
 
 
 def _calculate_file_sha256(file_path: Path) -> str:
     """Compute SHA-256 hash of a file in streaming chunks."""
     hasher = hashlib.sha256()
     with open(file_path, "rb") as f:
-        while chunk := f.read(64 * 1024):
+        while chunk := f.read(1024 * 1024):
             hasher.update(chunk)
     return hasher.hexdigest()
 
 
-def _verify_model_loadable(model_path: Path) -> bool:
-    """Verify that an ONNX model file can be parsed and loaded without protobuf corruption."""
+def _verify_model_loadable(model_path_: Path) -> bool:
+    """Fallback integrity check for files without a pinned hash: the file must parse as a model."""
     try:
-        with open(model_path, "rb") as f:
+        with open(model_path_, "rb") as f:
             header = f.read(32)
         if not (header and header[0] in (0x08, 0x12, 0x0A)):
             return False
-
-        if model_path.name == settings.YUNET_MODEL_NAME:
-            detector = cv2.FaceDetectorYN.create(str(model_path), "", (320, 320))
-            return detector is not None
-        session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
-        return session is not None
+        ort.InferenceSession(str(model_path_), providers=["CPUExecutionProvider"])
+        return True
     except Exception:
         return False
 
 
 def is_valid_model_file(
-    model_path: Path,
+    path: Path,
     min_size: int = settings.MIN_MODEL_FILE_SIZE,
     expected_name: str | None = None,
 ) -> bool:
-    """
-    Check if model file exists, meets minimum size, and passes cryptographic
-    pinned hash verification or deep protobuf load integrity check.
-    """
+    """A model file is valid when it exists, is large enough, and matches its pinned hash (or loads)."""
     try:
-        st = model_path.stat()
+        st = path.stat()
     except OSError:
         return False
 
-    if not (model_path.is_file() and st.st_size >= min_size):
+    if not (path.is_file() and st.st_size >= min_size):
         return False
 
-    cache_key = str(model_path.resolve())
-    mtime = st.st_mtime
+    cache_key = str(path.resolve())
+    fingerprint = (st.st_mtime_ns, st.st_size)
+    with _lock:
+        cached = _validation_cache.get(cache_key)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
 
-    cached = _validation_cache.get(cache_key)
-    if cached is not None and cached[0] == mtime:
-        return cached[1]
-
-    lookup_name = expected_name or model_path.name
-    pinned_hash = MODEL_PINNED_HASHES.get(lookup_name)
-    if pinned_hash:
+    pinned = expected_sha256(expected_name or path.name)
+    if pinned:
         try:
-            actual_hash = _calculate_file_sha256(model_path)
-            is_valid = actual_hash == pinned_hash
+            is_valid = _calculate_file_sha256(path) == pinned
         except OSError:
             is_valid = False
     else:
-        is_valid = _verify_model_loadable(model_path)
+        is_valid = _verify_model_loadable(path)
 
-    _validation_cache[cache_key] = (mtime, is_valid)
+    with _lock:
+        _validation_cache[cache_key] = (fingerprint, is_valid)
     return is_valid
 
 
 def _download_file_stream(download_url: str, temp_path: Path) -> None:
-    """Download binary payload in chunks to temporary destination."""
-    req = urllib.request.Request(download_url, headers={"User-Agent": "ProfilePhotoAnalyzer/3.0"})
+    """Download a binary payload in chunks to a temporary destination."""
+    if not download_url.startswith("https://"):
+        raise ValueError("Refusing to download a model over a non-HTTPS URL.")
+    req = urllib.request.Request(download_url, headers={"User-Agent": f"ProfilePhotoAnalyzer/{settings.APP_VERSION}"})
     with (
-        urllib.request.urlopen(req, timeout=30) as resp,
+        urllib.request.urlopen(req, timeout=settings.DOWNLOAD_TIMEOUT_SECONDS) as resp,  # noqa: S310
         open(temp_path, "wb") as f_out,
     ):
-        while True:
-            chunk = resp.read(64 * 1024)
-            if not chunk:
-                break
+        while chunk := resp.read(1024 * 1024):
             f_out.write(chunk)
 
 
-def ensure_model_file(model_path: Path, download_url: str, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
-    """Ensure that the requested ONNX model file exists locally; download atomically if missing."""
-    if is_valid_model_file(model_path, min_size):
+def ensure_model_file(path: Path, download_url: str | None, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
+    """Return True when a verified model file is in place, downloading it atomically if it is missing."""
+    if is_valid_model_file(path, min_size):
         return True
 
-    # Remove stale, truncated, or corrupted non-ONNX file if present
-    if model_path.is_file() and not is_valid_model_file(model_path, min_size):
+    if not download_url:
+        # Locally built models are never deleted automatically: a mismatch needs a human to look at it.
+        logger.warning("Model %s is missing or failed verification; run scripts/build_models.py.", path.name)
+        return False
+
+    if path.is_file():
         try:
-            model_path.unlink()
+            path.unlink()
         except OSError:
             pass
 
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = model_path.with_suffix(f"{model_path.suffix}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
     try:
-        logger.info(f"Downloading pre-trained model to {model_path} from {download_url}...")
+        logger.info("Downloading %s from %s ...", path.name, download_url)
         _download_file_stream(download_url, temp_path)
-
-        downloaded_size = temp_path.stat().st_size
-        if downloaded_size < min_size:
-            raise ValueError(f"Downloaded model file is too small ({downloaded_size} bytes < {min_size} bytes)")
-
-        # Verify cryptographic hash and model loadability before moving into destination path
-        if not is_valid_model_file(temp_path, min_size=min_size, expected_name=model_path.name):
-            raise ValueError(
-                f"Downloaded file for {model_path.name} failed cryptographic integrity or verification check."
-            )
-
-        os.replace(temp_path, model_path)
-        logger.info(f"Successfully downloaded and verified {model_path.name} ({downloaded_size} bytes)")
+        if temp_path.stat().st_size < min_size:
+            raise ValueError("Downloaded model file is too small.")
+        if not is_valid_model_file(temp_path, min_size=min_size, expected_name=path.name):
+            raise ValueError(f"Downloaded file for {path.name} failed integrity verification.")
+        os.replace(temp_path, path)
         return True
     except Exception as exc:
-        logger.warning(f"Could not download model {model_path.name} from {download_url}: {exc}")
+        logger.warning("Could not download model %s: %s", path.name, exc)
         if temp_path.exists():
             try:
                 temp_path.unlink()
@@ -146,114 +219,90 @@ def ensure_model_file(model_path: Path, download_url: str, min_size: int = setti
         return False
 
 
-def check_models_status() -> dict:
-    """Check readiness of all required local ONNX models."""
-    models = {
-        "yunet": {
-            "name": settings.YUNET_MODEL_NAME,
-            "path": settings.MODELS_DIR / settings.YUNET_MODEL_NAME,
-        },
-        "genderage": {
-            "name": settings.GENDERAGE_MODEL_NAME,
-            "path": settings.MODELS_DIR / settings.GENDERAGE_MODEL_NAME,
-        },
-        "anime_face": {
-            "name": settings.ANIME_FACE_MODEL_NAME,
-            "path": settings.MODELS_DIR / settings.ANIME_FACE_MODEL_NAME,
-        },
-        "yolov8n": {
-            "name": settings.YOLO_MODEL_NAME,
-            "path": settings.MODELS_DIR / settings.YOLO_MODEL_NAME,
-        },
-    }
-    result = {}
-    for key, info in models.items():
-        p: Path = info["path"]
-        ready = is_valid_model_file(p)
-        size_bytes = p.stat().st_size if ready else 0
+def check_models_status() -> dict[str, dict]:
+    """Report readiness of every model, plus whether the pre-embedded label bank is present."""
+    result: dict[str, dict] = {}
+    for key, spec in MODEL_SPECS.items():
+        path = model_path(key)
+        ready = is_valid_model_file(path)
         result[key] = {
-            "model_name": info["name"],
+            "model_name": spec.display_name,
+            "file": spec.filename,
+            "role": spec.role,
+            "license": spec.license,
             "ready": ready,
-            "size_bytes": size_bytes,
+            "size_bytes": path.stat().st_size if ready else 0,
         }
+    bank = settings.MODELS_DIR / LABEL_BANK_NAME
+    result["label_bank"] = {
+        "model_name": "SigLIP2 pre-computed prompt embeddings",
+        "file": LABEL_BANK_NAME,
+        "role": "zero-shot label vectors",
+        "license": "derived from Apache-2.0 SigLIP2 text tower",
+        "ready": bank.is_file() and bank.stat().st_size > 0,
+        "size_bytes": bank.stat().st_size if bank.is_file() else 0,
+    }
     return result
 
 
-def get_yunet_detector(width: int = 640, height: int = 640) -> cv2.FaceDetectorYN | None:
-    """Retrieve or lazily initialize the OpenCV YuNet face detector."""
-    global _yunet_detector, _yunet_size
-    path = settings.MODELS_DIR / settings.YUNET_MODEL_NAME
-    if not ensure_model_file(path, settings.YUNET_URL):
-        return None
+def _providers() -> list[str]:
+    if settings.FORCE_CPU:
+        return ["CPUExecutionProvider"]
+    available = ort.get_available_providers()
+    preferred = [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider") if p in available]
+    return [*preferred, "CPUExecutionProvider"]
 
-    try:
-        if _yunet_detector is None:
-            _yunet_detector = cv2.FaceDetectorYN.create(
-                str(path),
-                "",
-                (width, height),
-                score_threshold=settings.HUMAN_FACE_CONF_THRESHOLD,
-                nms_threshold=0.3,
+
+def get_session(key: str) -> ort.InferenceSession | None:
+    """Lazily create (once, thread-safely) the ONNX Runtime session for a registered model."""
+    with _lock:
+        session = _sessions.get(key)
+        if session is not None:
+            return session
+
+        spec = MODEL_SPECS[key]
+        path = model_path(key)
+        if not ensure_model_file(path, spec.url):
+            return None
+        try:
+            options = ort.SessionOptions()
+            # Measured: onnxruntime's "use every core" default was ~4x slower than 4 threads on a 14-core CPU.
+            options.intra_op_num_threads = settings.ORT_INTRA_OP_THREADS or min(
+                DEFAULT_ORT_THREADS, os.cpu_count() or 1
             )
-            _yunet_size = (width, height)
-        elif _yunet_size != (width, height):
-            _yunet_detector.setInputSize((width, height))
-            _yunet_size = (width, height)
-        return _yunet_detector
-    except Exception as exc:
-        logger.warning(f"Failed to initialize YuNet detector: {exc}")
-        return None
+            session = ort.InferenceSession(str(path), sess_options=options, providers=_providers())
+        except Exception as exc:
+            logger.warning("Failed to initialise %s session: %s", spec.display_name, exc)
+            return None
+        _sessions[key] = session
+        return session
 
 
-def get_genderage_session() -> ort.InferenceSession | None:
-    """Retrieve or lazily initialize the InsightFace GenderAge ONNX session."""
-    global _genderage_session
-    if _genderage_session is not None:
-        return _genderage_session
-
-    path = settings.MODELS_DIR / settings.GENDERAGE_MODEL_NAME
-    if not ensure_model_file(path, settings.GENDERAGE_URL):
-        return None
-
-    try:
-        _genderage_session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
-        return _genderage_session
-    except Exception as exc:
-        logger.warning(f"Failed to initialize GenderAge session: {exc}")
-        return None
-
-
-def get_anime_face_session() -> ort.InferenceSession | None:
-    """Retrieve or lazily initialize the Anime/Cartoon Face Detector ONNX session."""
-    global _anime_session
-    if _anime_session is not None:
-        return _anime_session
-
-    path = settings.MODELS_DIR / settings.ANIME_FACE_MODEL_NAME
-    if not ensure_model_file(path, settings.ANIME_FACE_URL):
-        return None
-
-    try:
-        _anime_session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
-        return _anime_session
-    except Exception as exc:
-        logger.warning(f"Failed to initialize Anime Face session: {exc}")
-        return None
+def get_yunet_detector(width: int = 640, height: int = 640) -> cv2.FaceDetectorYN | None:
+    """Return the shared YuNet detector sized for the current image (callers must hold ``yunet_lock``)."""
+    global _yunet_detector, _yunet_size
+    spec = MODEL_SPECS["yunet"]
+    path = model_path("yunet")
+    with _lock:
+        if not ensure_model_file(path, spec.url):
+            return None
+        try:
+            if _yunet_detector is None:
+                _yunet_detector = cv2.FaceDetectorYN.create(
+                    str(path),
+                    "",
+                    (width, height),
+                    score_threshold=settings.HUMAN_FACE_CONF_THRESHOLD,
+                    nms_threshold=settings.FACE_NMS_IOU,
+                )
+                _yunet_size = (width, height)
+            elif _yunet_size != (width, height):
+                _yunet_detector.setInputSize((width, height))
+                _yunet_size = (width, height)
+            return _yunet_detector
+        except Exception as exc:
+            logger.warning("Failed to initialise YuNet detector: %s", exc)
+            return None
 
 
-def get_yolo_session() -> ort.InferenceSession | None:
-    """Retrieve or lazily initialize the YOLOv8n ONNX session."""
-    global _yolo_session
-    if _yolo_session is not None:
-        return _yolo_session
-
-    path = settings.MODELS_DIR / settings.YOLO_MODEL_NAME
-    if not ensure_model_file(path, settings.YOLO_URL):
-        return None
-
-    try:
-        _yolo_session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
-        return _yolo_session
-    except Exception as exc:
-        logger.warning(f"Failed to initialize YOLOv8n session: {exc}")
-        return None
+yunet_lock = threading.Lock()  # the YuNet detector holds mutable input-size state, so detection is serialised

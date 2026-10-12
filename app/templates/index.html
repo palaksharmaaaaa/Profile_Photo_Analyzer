@@ -570,7 +570,7 @@
             <span class="app-badge">⚡ On-Device CV Inference &bull; Edge Neural Networks</span>
         </div>
         <p class="subtitle">
-            Enterprise computer vision pipeline: binary magic-byte verification, Shannon entropy screening, non-human entity discrimination (animals, birds, anime, diagrams), and continuous demographics grouped into strict 3-year age brackets.
+            Checks that the image has real content, finds every face and verifies which ones are real human faces (animals, birds, cartoons, paintings and diagrams are counted separately), then estimates age in 3-year brackets and gender for each real human face. Anything the models cannot support is reported as Unsure or Not Detected.
         </p>
 
         <!-- 4-Stage Stepper -->
@@ -597,7 +597,7 @@
                     <span class="step-status-pill pill-pending" id="step3-pill">Pending</span>
                 </div>
                 <div class="step-title">Face Discrimination</div>
-                <div class="step-desc">YuNet + YOLOv8 + DeepGHS: separates humans from other entities.</div>
+                <div class="step-desc">YuNet + YOLOX + anime detector, each face verified by SigLIP2.</div>
             </div>
             <div class="step-item" id="step4">
                 <div class="step-header">
@@ -605,7 +605,7 @@
                     <span class="step-status-pill pill-pending" id="step4-pill">Pending</span>
                 </div>
                 <div class="step-title">Demographics</div>
-                <div class="step-desc">Gender presentation &amp; continuous age in 3-year intervals.</div>
+                <div class="step-desc">Gender and age (3-year brackets, with range and uncertainty).</div>
             </div>
         </div>
 
@@ -614,8 +614,8 @@
             <div class="upload-zone" id="dropZone">
                 <span class="upload-icon">📷</span>
                 <strong>Select or Drag &amp; Drop Profile Photo</strong>
-                <p class="card-hint">Accepted: JPG, JPEG, PNG, WEBP, BMP (Max 10 MB &bull; Magic bytes verified)</p>
-                <input type="file" id="photo" name="file" accept=".jpg,.jpeg,.png,.webp,.bmp" required>
+                <p class="card-hint">Accepted: JPG, PNG, WEBP, GIF, TIFF, BMP (Max 10 MB &bull; format verified from file contents)</p>
+                <input type="file" id="photo" name="file" accept=".jpg,.jpeg,.jfif,.png,.webp,.bmp,.gif,.tif,.tiff" required>
                 <div class="btn-group">
                     <button type="submit" id="analyzeBtn">Analyze Photo</button>
                     <button type="button" class="btn-outline hidden" id="resetBtn">Upload Another</button>
@@ -678,6 +678,7 @@
                 <div id="otherFaceDetailVal" class="card-hint"></div>
             </div>
         </div>
+        <p id="summaryText" class="card-hint" style="margin-bottom: 18px;"></p>
 
         <!-- Per-Face Breakdown Container -->
         <div id="facesSection" class="hidden">
@@ -691,6 +692,12 @@
             <div id="otherEntitiesContainer"></div>
         </div>
 
+        <!-- Unverified candidates -->
+        <div id="unsureSection" class="hidden">
+            <h2>Unverified Candidates (Unsure)</h2>
+            <div id="unsureContainer"></div>
+        </div>
+
         <!-- Technical Diagnostics & Forensics Drawer -->
         <details class="tech-drawer" id="techDrawer">
             <summary>
@@ -701,7 +708,8 @@
                 <table class="tech-table">
                     <tbody>
                         <tr><th>Inference Latency</th><td id="diagLatency">—</td></tr>
-                        <tr><th>Resolution (W &times; H)</th><td id="diagRes">—</td></tr>
+                        <tr><th>Analysed Resolution (W &times; H)</th><td id="diagRes">—</td></tr>
+                        <tr><th>Original Resolution / Orientation</th><td id="diagOriginal">—</td></tr>
                         <tr><th>Magic Binary Format</th><td id="diagFormat">—</td></tr>
                         <tr><th>Shannon Information Entropy</th><td id="diagEntropy">—</td></tr>
                         <tr><th>Channel Std Deviation</th><td id="diagStd">—</td></tr>
@@ -731,7 +739,7 @@
     <!-- Authenticity Notice -->
     <div class="panel">
         <p class="footer-note">
-            Authenticity Guarantee: All facial detections, landmark points, non-human entity classifications, and demographic estimates are produced dynamically on-device by local ONNX neural networks once model weights are initialized. No external cloud inference endpoints or user tracking APIs are queried during analysis. If an attribute cannot be determined with statistical certainty, the system outputs "Unsure" or "Not Detected" without fabrication.
+            Every value on this page is produced by the models listed under Technical Diagnostics, running locally on this server; nothing is sent to an external service. Age and gender are appearance-based estimates: the age model's typical error is several years, so a 3-year bracket is the most likely bracket, not a certainty (see the range and probability shown for each face). When a model cannot support an answer the result is "Unsure", and when nothing could be detected it is "Not Detected". Age estimation is not age verification.
         </p>
     </div>
 
@@ -752,6 +760,13 @@
 
     const hide = id => document.getElementById(id).classList.add("hidden");
     const show = id => document.getElementById(id).classList.remove("hidden");
+
+    const esc = value => String(value === undefined || value === null ? "" : value)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+    const pct = (value, digits = 1) =>
+        (value === undefined || value === null) ? null : (value * 100).toFixed(digits) + "%";
 
     function setText(id, value) {
         const el = document.getElementById(id);
@@ -897,7 +912,9 @@
         } else if (status === "NON_PHOTO_WARNING") {
             setStatus("WARNING — NON-PHOTO / NON-HUMAN ENTITY DETECTED", "status-warning");
         } else if (status === "AGE_VERIFICATION_REQUIRED") {
-            setStatus("PASSED — AGE VERIFICATION REQUIRED (&lt;18 RISK)", "status-warning");
+            setStatus("AGE VERIFICATION REQUIRED (POSSIBLE UNDER-18)", "status-warning");
+        } else if (status === "AGE_ESTIMATION_UNAVAILABLE") {
+            setStatus("AGE UNSURE — MANUAL REVIEW REQUIRED", "status-warning");
         } else if (accepted) {
             setStatus("PHOTO PASSED ALL VERIFICATIONS", "status-success");
         } else if (status.includes("REVIEW") || status.includes("UNCERTAIN")) {
@@ -920,12 +937,13 @@
         // Real Human Faces
         const humanCount = (data.real_human_face_count !== undefined) ? data.real_human_face_count : (data.face_count || 0);
         setText("humanFaceCountVal", humanCount + (humanCount === 1 ? " Face" : " Faces"));
-        setText("humanFaceDetailVal", humanCount === 1 ? "1 authentic human face detected" : (humanCount > 1 ? "Multiple human faces detected" : "No human faces detected"));
+        setText("humanFaceDetailVal", humanCount === 1 ? "1 verified real human face" : (humanCount > 1 ? "Multiple verified real human faces" : "No verified real human face"));
 
         // Other Faces
         const otherCount = data.other_face_count || 0;
         setText("otherFaceCountVal", otherCount + (otherCount === 1 ? " Entity" : " Entities"));
-        setText("otherFaceDetailVal", otherCount > 0 ? (otherCount + " non-human face/entity detected") : "None detected");
+        setText("otherFaceDetailVal", otherCount > 0 ? (otherCount + " non-human face(s)/entity(ies) detected") : "None detected");
+        setText("summaryText", data.summary || "");
 
         // Render Interactive Overlays on Original Photo
         renderInteractiveOverlays(data);
@@ -941,9 +959,20 @@
                 card.className = "face-card";
                 card.id = `human-card-${f.face_id}`;
 
-                const isMinorText = f.possible_minor_risk ? '<span class="badge-chip" style="background:#fee2e2;color:#991b1b;">Minor Risk (&lt;18)</span>' : '<span class="badge-chip green">Adult Age</span>';
-                const ageConf = f.age_confidence ? (" (Conf: " + (f.age_confidence * 100).toFixed(1) + "%)") : "";
-                const genderConf = f.gender_confidence ? (" (Conf: " + (f.gender_confidence * 100).toFixed(1) + "%)") : "";
+                const ageUnsure = f.age_status !== "Estimated";
+                const pUnder18 = pct(f.p_under_18, 0);
+                const ageChip = ageUnsure
+                    ? '<span class="badge-chip" style="background:#fef3c7;color:#92400e;">Age Unsure</span>'
+                    : (f.possible_minor_risk
+                        ? '<span class="badge-chip" style="background:#fee2e2;color:#991b1b;">Possible minor (P&lt;18 = ' + esc(pUnder18) + ')</span>'
+                        : '<span class="badge-chip green">P(&lt;18) = ' + esc(pUnder18) + '</span>');
+                const ageDetail = ageUnsure
+                    ? esc((f.demographics_notes || []).join(" ") || "The model could not support an age estimate.")
+                    : ("Estimated " + esc(f.estimated_age) + " y &bull; 80% range " + esc(f.age_range[0]) + "&ndash;" + esc(f.age_range[1]) +
+                       " y &bull; bracket probability " + esc(pct(f.age_confidence, 0)));
+                const genderDetail = f.gender_confidence !== null && f.gender_confidence !== undefined
+                    ? ("Model score " + esc(pct(f.gender_confidence)))
+                    : "";
                 const visStatus = (f.face_visibility && f.face_visibility.status) ? f.face_visibility.status : "—";
 
                 // CSS Crop Avatar Calculation from box_normalized [ymin%, xmin%, ymax%, xmax%]
@@ -961,25 +990,25 @@
                     <div class="face-card-header">
                         <div class="face-avatar" style="${avatarStyle}"></div>
                         <div>
-                            <h3>Face #${f.face_id} ${f.is_primary ? "(Primary Profile Subject)" : ""}</h3>
-                            <div class="card-hint">Spatial Reading Order #0${f.face_id} &bull; Detection Conf: ${(f.detection_confidence * 100).toFixed(1)}%</div>
+                            <h3>Face #${esc(f.face_id)} ${f.is_primary ? "(Primary Profile Subject)" : ""}</h3>
+                            <div class="card-hint">Detection ${esc(pct(f.detection_confidence))} &bull; Real-human verification ${esc(pct(f.verification_confidence))}</div>
                         </div>
                     </div>
                     <div class="grid-3" style="margin-bottom:0;">
                         <div>
-                            <div class="card-label">Age Bracket (Pairs of 3)</div>
-                            <div class="card-val" style="font-size:16px;">${f.age_group || "Not Detected"}</div>
-                            <div class="card-hint">${ageConf} ${isMinorText}</div>
+                            <div class="card-label">Age Bracket (3-year)</div>
+                            <div class="card-val" style="font-size:16px;">${esc(f.age_group || "Not Detected")}</div>
+                            <div class="card-hint">${ageDetail} ${ageChip}</div>
                         </div>
                         <div>
-                            <div class="card-label">Gender Presentation</div>
-                            <div class="card-val" style="font-size:16px;">${f.gender || "Not Detected"}</div>
-                            <div class="card-hint">${genderConf}</div>
+                            <div class="card-label">Gender (appearance-based)</div>
+                            <div class="card-val" style="font-size:16px;">${esc(f.gender || "Not Detected")}</div>
+                            <div class="card-hint">${genderDetail}</div>
                         </div>
                         <div>
                             <div class="card-label">Framing &amp; Quality</div>
-                            <div class="card-val" style="font-size:16px;">${visStatus}</div>
-                            <div class="card-hint">${(f.face_visibility && f.face_visibility.reason) ? f.face_visibility.reason : ""}</div>
+                            <div class="card-val" style="font-size:16px;">${esc(visStatus)}</div>
+                            <div class="card-hint">${esc((f.face_visibility && f.face_visibility.reason) ? f.face_visibility.reason : "")}</div>
                         </div>
                     </div>
                 `;
@@ -1012,13 +1041,16 @@
                 chip.id = `other-chip-${ent.face_id}`;
 
                 let icon = "🏷️";
-                const lbl = (ent.label || "").toLowerCase();
-                if (lbl.includes("cat") || lbl.includes("dog") || lbl.includes("animal")) icon = "🐾";
-                else if (lbl.includes("bird")) icon = "🦜";
-                else if (lbl.includes("anime") || lbl.includes("cartoon")) icon = "🎨";
-                else if (lbl.includes("diagram")) icon = "📐";
+                const type = ent.face_type || "";
+                if (type === "animal") icon = "🐾";
+                else if (type === "bird") icon = "🦜";
+                else if (["anime", "cartoon_or_illustration", "painting", "render_3d"].includes(type)) icon = "🎨";
+                else if (type === "diagram") icon = "📐";
+                else if (type === "doll_statue") icon = "🗿";
 
-                chip.textContent = `${icon} ${ent.label} (Score: ${(ent.confidence * 100).toFixed(1)}%)`;
+                const score = pct(ent.confidence);
+                chip.textContent = `${icon} ${ent.label}` + (score ? ` (${score})` : "") +
+                    (ent.verified_by ? ` — checked by ${ent.verified_by}` : "");
 
                 chip.addEventListener("mouseenter", () => {
                     const boxEl = document.getElementById(`overlay-other-${ent.face_id}`);
@@ -1035,6 +1067,24 @@
             hide("otherEntitiesSection");
         }
 
+        // Unverified candidates
+        const unsureContainer = document.getElementById("unsureContainer");
+        unsureContainer.innerHTML = "";
+        const unsureFaces = data.unsure_faces || [];
+        if (unsureFaces.length > 0) {
+            show("unsureSection");
+            unsureFaces.forEach(u => {
+                const chip = document.createElement("span");
+                chip.className = "badge-chip";
+                chip.style.cssText = "background:#fef3c7;color:#92400e;";
+                chip.id = `unsure-chip-${u.face_id}`;
+                chip.textContent = `❓ #${u.face_id} ${u.label} — ${u.reason}`;
+                unsureContainer.appendChild(chip);
+            });
+        } else {
+            hide("unsureSection");
+        }
+
         // Technical Diagnostics
         const diag = data.technical_diagnostics || {};
         setText("latencyBadge", (data.processing_time_ms || diag.processing_time_ms || 0) + " ms");
@@ -1044,7 +1094,9 @@
         setText("diagEntropy", diag.entropy_score !== undefined ? String(diag.entropy_score) : "—");
         setText("diagStd", diag.std_dev_score !== undefined ? String(diag.std_dev_score) : "—");
         setText("diagLaplacian", diag.laplacian_var !== undefined ? String(diag.laplacian_var) : "—");
-        setText("diagModels", (diag.models_executed && diag.models_executed.length) ? diag.models_executed.join(", ") : "YuNet, InsightFace, DeepGHS, YOLOv8n");
+        const original = (diag.original_width && diag.original_height) ? `${diag.original_width} × ${diag.original_height} px` : "—";
+        setText("diagOriginal", original + (diag.exif_orientation_applied ? " (EXIF rotation applied)" : "") + (diag.downscaled_for_analysis ? " (downscaled for analysis)" : ""));
+        setText("diagModels", (diag.models_executed && diag.models_executed.length) ? diag.models_executed.join(", ") : "—");
 
         setText("extraNote", data.note || "");
     }
@@ -1071,13 +1123,14 @@
         const offsetLeft = (img.parentElement.clientWidth - renderedW) / 2;
         const offsetTop = (img.parentElement.clientHeight - renderedH) / 2;
 
-        function addBox(boxNorm, isHuman, id, label) {
+        function addBox(boxNorm, kind, id, label) {
             if (!boxNorm || boxNorm.length < 4) return;
+            const isHuman = kind === "human";
             const [ymin, xmin, ymax, xmax] = boxNorm;
 
             const boxEl = document.createElement("div");
             boxEl.className = `box-highlight ${isHuman ? "human" : "other"}`;
-            boxEl.id = `overlay-${isHuman ? "human" : "other"}-${id}`;
+            boxEl.id = `overlay-${kind}-${id}`;
 
             const leftPx = offsetLeft + (xmin / 100) * renderedW;
             const topPx = offsetTop + (ymin / 100) * renderedH;
@@ -1097,17 +1150,13 @@
             // Two-way hover binding
             boxEl.addEventListener("mouseenter", () => {
                 boxEl.classList.add("active");
-                const targetCard = isHuman
-                    ? document.getElementById(`human-card-${id}`)
-                    : document.getElementById(`other-chip-${id}`);
+                const targetCard = document.getElementById(isHuman ? `human-card-${id}` : `${kind}-chip-${id}`);
                 if (targetCard) targetCard.classList.add("active");
             });
 
             boxEl.addEventListener("mouseleave", () => {
                 boxEl.classList.remove("active");
-                const targetCard = isHuman
-                    ? document.getElementById(`human-card-${id}`)
-                    : document.getElementById(`other-chip-${id}`);
+                const targetCard = document.getElementById(isHuman ? `human-card-${id}` : `${kind}-chip-${id}`);
                 if (targetCard) targetCard.classList.remove("active");
             });
 
@@ -1115,11 +1164,15 @@
         }
 
         (data.human_faces || []).forEach(f => {
-            addBox(f.box_normalized, true, f.face_id, `Face #${f.face_id} (${f.gender || "Human"})`);
+            addBox(f.box_normalized, "human", f.face_id, `Face #${f.face_id} (${f.gender || "Human"})`);
         });
 
         (data.other_faces || []).forEach(ent => {
-            addBox(ent.box_normalized, false, ent.face_id, ent.label || "Non-human");
+            addBox(ent.box_normalized, "other", ent.face_id, ent.label || "Non-human");
+        });
+
+        (data.unsure_faces || []).forEach(u => {
+            addBox(u.box_normalized, "unsure", u.face_id, "Unsure");
         });
     }
 

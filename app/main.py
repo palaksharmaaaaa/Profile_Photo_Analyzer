@@ -1,3 +1,4 @@
+import hmac
 import logging
 import time
 from collections import defaultdict
@@ -34,7 +35,7 @@ class ProductionSecurityMiddleware(BaseHTTPMiddleware):
             auth_hdr = request.headers.get("Authorization", "")
             if auth_hdr.startswith("Bearer "):
                 api_key = auth_hdr[7:].strip()
-        if api_key != settings.API_KEY:
+        if not api_key or not settings.API_KEY or not hmac.compare_digest(api_key, settings.API_KEY):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized: Invalid or missing API key."},

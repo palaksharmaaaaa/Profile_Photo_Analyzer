@@ -1,155 +1,164 @@
 # Profile Photo Analyzer
 
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=hgarg02_project-profile-photo-analyzer&metric=alert_status)](https://sonarcloud.io/dashboard?id=hgarg02_project-profile-photo-analyzer)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=hgarg02_project-profile-photo-analyzer&metric=coverage)](https://sonarcloud.io/dashboard?id=hgarg02_project-profile-photo-analyzer)
-[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=hgarg02_project-profile-photo-analyzer&metric=bugs)](https://sonarcloud.io/dashboard?id=hgarg02_project-profile-photo-analyzer)
-[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=hgarg02_project-profile-photo-analyzer&metric=vulnerabilities)](https://sonarcloud.io/dashboard?id=hgarg02_project-profile-photo-analyzer)
+A FastAPI web service and single-page UI that analyses an uploaded photo and tells you, using local ONNX models only:
 
-A robust, modular computer vision web service built with FastAPI to screen and validate profile photos for identity compliance, facial visibility, sharpness, framing, demographic attributes, and synthetic image detection.
+1. whether the image has any visual information at all (blank / solid colour / uniform fill are rejected),
+2. how many faces it contains and **which of them are real human faces** versus animals, birds, cartoons, anime,
+   paintings, 3D renders, dolls/statues/masks or diagrams (each kind is counted and reported separately),
+3. the **gender** and the **age in 3-year brackets** (0 to 3, 3 to 6, ... 18 to 21, ...) of every real human face.
+
+Nothing is invented: when a model cannot support an answer the field says **`Unsure`**, and when nothing could be
+detected it says **`Not Detected`**. Every number in a response comes from a model that actually ran, and the response
+lists exactly which ones (`technical_diagnostics.models_executed`).
 
 ---
 
-## Architecture & Project Structure
+## How the pipeline works
 
 ```text
-project-profile-photo-analyzer/
-├── .github/
-│   └── workflows/
-│       └── ci.yml                 # GitHub Actions CI workflow (pytest + SonarCloud)
-├── app/
-│   ├── api/
-│   │   ├── __init__.py
-│   │   └── routes.py              # Synchronous threadpool route handlers
-│   ├── core/
-│   │   ├── __init__.py
-│   │   └── config.py              # Pydantic Settings with env var support
-│   ├── schemas/
-│   │   ├── __init__.py
-│   │   └── analysis.py            # Strongly typed Pydantic models
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── image_utils.py         # Clamping, Base64 encoding, annotations
-│   │   ├── quality_service.py     # Sharpness, edge margin, exposure, framing
-│   │   ├── classifier_service.py  # Zero-shot CLIP photo/illustration screening
-│   │   ├── face_service.py        # YuNet & InsightFace single-pass detection & demographics
-│   │   ├── model_manager.py       # Pinned cryptographic hash verification & model downloads
-│   │   └── analyzer.py            # End-to-end analysis orchestrator
-│   ├── templates/
-│   │   └── index.html             # Responsive modern UI
-│   ├── __init__.py
-│   └── main.py                    # FastAPI application factory with security middleware
-├── tests/
-│   ├── conftest.py                # Synthetic image fixtures & mocks
-│   ├── test_analyzer.py           # Orchestrator decision tests
-│   ├── test_api.py                # HTTP status & schema tests
-│   ├── test_classifier_service.py # Image type screening tests
-│   ├── test_entrypoint.py         # Root app.py entrypoint tests
-│   ├── test_face_service.py       # Demographic & minor detection tests
-│   ├── test_image_utils.py        # Utility tests
-│   ├── test_model_manager.py      # Cryptographic hash and integrity tests
-│   └── test_quality_service.py    # Blur, exposure, & landmark tests
-├── app.py                         # Root entrypoint (`uvicorn app:app`)
-├── sonar-project.properties       # SonarCloud configuration
-├── requirements.txt               # Direct dependencies
-├── requirements.lock              # Fully pinned reproducible dependency lockfile
-├── pyproject.toml                 # Ruff and Pytest configuration
-└── README.md
+upload (<= 10 MB; JPEG, PNG, WebP, GIF, TIFF, BMP - format checked from the file's bytes, not its extension)
+  -> decode: EXIF-upright, transparency flattened onto white, first frame of animations, working size capped at 2048 px
+  -> 2. information check (entropy / std-dev / Laplacian)           -> "no information" stops here, no model runs
+  -> 3. face candidates:  YuNet (faces)  +  YOLOX-S (animals/birds)  +  DeepGHS (anime faces)
+        every candidate crop is verified by SigLIP2 zero-shot:  real human | animal | bird | cartoon | anime |
+        painting | 3D | doll/statue/mask | diagram | not a face | Unsure
+  -> 4. for every verified real human face: quality/pose check, then age + gender
+        (3 crop margins x mirrored = 6 views; the disagreement between views is the uncertainty measure)
+  -> 5. response: counts, per-face results, unverified candidates, the models that ran
 ```
 
----
+Why per-face verification: YuNet also fires on cat, dog and cartoon faces, and the image as a whole may be a photo
+that contains both people and animals. The decision "is this a real human face" is therefore made on each face crop,
+and age/gender are only produced for faces that pass it.
 
-## Key Features & Security Hardening
+### What the age and gender fields mean
 
-1. **Production Security & Access Controls**:
-   - **Rate Limiting**: Sliding window per client IP with configurable threshold (`RATE_LIMIT_PER_MINUTE`).
-   - **Concurrency Guard**: Request semaphore limiting active heavy inference tasks (`MAX_CONCURRENT_REQUESTS`).
-   - **Authentication**: Optional API key authentication header (`X-API-Key` or Bearer token).
-   - **Resource Limits**: 10 MiB upload cap, 4096px dimension cap, and 16 Megapixel Pillow decompression bomb guards.
-2. **Cryptographic Model Verification**:
-   - Model files are checked against pinned SHA-256 hashes (`model_manager.py`).
-   - Atomic temporary file downloads prevent partial or corrupt model states.
-3. **Truthful, Un-fabricated Diagnostics & Demographics**:
-   - Continuous age regression honestly reports uncalibrated confidence as `None` rather than borrowing face detector scores.
-   - `models_executed` dynamically tracks only the confirmed models that actually performed inference during the request.
-   - Heuristic image classification fails closed and flags review-required rather than silently assuming real photograph status when CLIP is absent.
-4. **Non-Blocking Execution & Clean Architecture**:
-   - Synchronous route operations executed via FastAPI threadpool workers.
-   - 100.00% statement test coverage across all application modules.
-   - 0 bugs, 0 vulnerabilities, 0 code smells, and 0.0% duplication on SonarCloud.
+| Field | Meaning |
+| :--- | :--- |
+| `age_group` | The 3-year bracket containing the estimated age, `Unsure`, or `Not Detected`. |
+| `estimated_age`, `age_range` | Mean over the 6 views, and an 80 % interval. The interval is wide on purpose (see *Limits*). |
+| `age_confidence` | Probability that the true age is inside `age_group` (typically 15-20 %: a 3-year bracket is narrower than the model's error). |
+| `p_under_18` | Probability the person is under 18. `possible_minor_risk` is true at or above `PPA_MINOR_RISK_PROBABILITY` (0.10). |
+| `gender` | `Female`, `Male`, `Unsure` or `Not Detected` (appearance-based; `Unsure` for apparent children, low scores or disagreeing views). |
+
+`Unsure` age/gender fields never carry a number. Faces that are too small, too turned or too blurred for the model are
+reported `Unsure` without running it.
 
 ---
 
-## Production Security & Configuration
+## Models (all run locally, CPU, ONNX Runtime)
 
-| Environment Variable | Default | Purpose / Production Guidance |
-| :--- | :--- | :--- |
-| `PPA_ENVIRONMENT` | `development` | Set to `production` for live deployments. Enforces authentication fail-closed rules. |
-| `PPA_API_KEY` | `None` | **Mandatory** in `production` mode. Rejects unauthenticated callers (`401 Unauthorized`). |
-| `PPA_API_KEY_HEADER` | `X-API-Key` | Header checked for API key authentication (Bearer token also supported). |
-| `PPA_RATE_LIMIT_PER_MINUTE`| `60` | Sliding-window request allowance per client IP. Returns `429 Too Many Requests`. |
-| `PPA_MAX_CONCURRENT_REQUESTS`| `10` | Concurrency guard per worker process. Returns `503 Service Unavailable`. |
-| `PPA_TRUSTED_PROXIES` | `["127.0.0.1", "::1"]` | Trusted reverse proxy IPs used to inspect `X-Forwarded-For` for client origin. |
-| `PPA_MAX_TRACKED_IPS` | `10000` | Bounded memory ceiling for in-memory rate-limit IP records. |
-| `PPA_ALLOW_HEURISTIC_ACCEPTANCE` | `False` | When `False` (default, fail-closed), images without neural CLIP verification require manual review. Set to `True` only in trusted offline environments to allow CV heuristic acceptance. |
-| `PPA_REQUIRE_NEURAL_CLASSIFIER` | `False` | When `True` (enforced automatically in `production` mode), routes non-CLIP environments to `MANUAL_REVIEW_REQUIRED`. |
+| Task | Model | Size | Licence |
+| :--- | :--- | ---: | :--- |
+| Face candidates | OpenCV **YuNet** 2023mar | 0.2 MB | MIT (OpenCV Zoo) |
+| Animals and birds | **YOLOX-S** (COCO) | 35.9 MB | Apache-2.0 |
+| Anime / cartoon face locator | DeepGHS anime face v1.4n | 12.1 MB | MIT (model card) |
+| Real human vs. everything else, image type | **SigLIP2** Base/16-224 vision tower, INT8, with pre-computed prompt embeddings | 94.6 MB | Apache-2.0 |
+| Age + gender | abhilash88 ViT age/gender, INT8-quantised by `scripts/build_models.py` | 88.9 MB | Apache-2.0 per model card; **see [NOTICE.md](NOTICE.md)** |
 
-> [!NOTE]
-> For multi-worker, horizontally scaled clusters, rate-limit state should be backed by a shared Redis cluster or sticky-session routing at the API gateway layer.
->
-> **Production Photo Acceptance**: In the default installation without `transformers`/CLIP, non-cartoon human photos fail closed to `accepted: false` (`MANUAL_REVIEW_REQUIRED`). For automated photo acceptance without human-in-the-loop review, provision the CLIP model by installing `transformers` (`pip install transformers torch`).
+Total: about 232 MB. **Read [NOTICE.md](NOTICE.md) before any commercial use**: the age/gender model was trained on
+UTKFace, whose data terms are reported as non-commercial.
 
 ---
 
-## Evaluation, Accuracy & Fairness
-
-Empirical latency benchmarks measured via `scripts/benchmark_latency.py` (~1.5 s p50, ~2.5 s p95 on standard CPU), model optimization guidance (INT8 quantization, ONNX Runtime TensorRT/CUDA acceleration for sub-250 ms p95), and target accuracy/fairness governance specifications (FairFace, UTKFace, LFW targets, age regression MAE $\le 4.2$ years, gender parity metrics, fail-closed minor protection) are detailed in the [Evaluation and Fairness Specification](docs/EVALUATION_AND_FAIRNESS.md).
-
----
-
-## Installation & Setup
-
-### 1. Create a Virtual Environment
+## Install and run
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate                     # Windows;  source .venv/bin/activate on Linux/macOS
+pip install -r requirements.lock           # runtime dependencies only (no torch, no transformers)
+
+# One-time model build: downloads ~760 MB of pinned upstream files (SHA-256 verified), builds INT8 models and
+# the label embeddings into models/. YuNet, YOLOX and the anime detector download themselves on first use.
+pip install -r requirements-build.txt
+python scripts/build_models.py --cleanup
+
+python -m app                              # http://127.0.0.1:8000   (or: uvicorn app.main:app)
 ```
 
-### 2. Install Pinned Dependencies
+`GET /health` reports every model as ready or not (`degraded`). Without the built models the service stays up but
+verification is impossible, so faces come back as **Unsure** and nothing is accepted - it never guesses.
 
-```bash
-uv pip install -r requirements.lock
-```
+### API
 
-### 3. Run the Application
+`POST /analyze-profile-photo` with a multipart `file`. Main response fields: `accepted`, `posting_status`,
+`reason`, `summary`, `real_human_face_count`, `other_face_count`, `unsure_face_count`, `human_faces[]`,
+`other_faces[]` (each with `face_type`, `label`, `verified_by`), `unsure_faces[]`, `pipeline_steps[]`,
+`technical_diagnostics` (models that ran, original resolution, EXIF rotation, timing), and `original_image` /
+`annotated_image` data URLs. The schema is `app/schemas/analysis.py`.
 
-```bash
-uvicorn app:app --reload
-```
-
-Open your browser at `http://127.0.0.1:8000`.
+`posting_status` values: `NO_INFORMATION`, `REJECTED`, `NON_PHOTO_WARNING`, `MANUAL_REVIEW_REQUIRED`,
+`REJECTED_OR_REVIEW`, `AGE_ESTIMATION_UNAVAILABLE`, `AGE_VERIFICATION_REQUIRED`, `INITIAL_CHECKS_PASSED`.
+The profile policy (exactly one verified real human face, nothing unverified, good quality, adult-looking) lives in
+`analyzer._decide`; the per-face data is independent of it.
 
 ---
 
-## Running Tests & Coverage
+## Configuration
 
-```bash
-pytest --cov=app --cov=app.py --cov-config=.coveragerc --cov-report=term-missing --cov-report=xml
-```
+Every setting in `app/core/config.py` can be overridden with a `PPA_` environment variable. The ones that matter most:
 
-Test coverage standard: **100.00% statement coverage** across all source files.
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `PPA_ENVIRONMENT` | `development` | `production` requires `PPA_API_KEY`. |
+| `PPA_API_KEY` | none | Required in production; sent as `X-API-Key` or `Authorization: Bearer`. |
+| `PPA_MAX_UPLOAD_BYTES` | 10 MiB | Upload limit. |
+| `PPA_WORKING_MAX_SIDE` | 2048 | Longest side the analysis runs at (larger uploads are downscaled). |
+| `PPA_HUMAN_MIN_PROB` / `PPA_HUMAN_MIN_MARGIN` | 0.60 / 0.25 | How sure SigLIP2 must be to call a face a real human face. |
+| `PPA_AGE_UNSURE_VIEW_STD` | 6.0 | View disagreement (years) above which age is `Unsure`. |
+| `PPA_MINOR_RISK_PROBABILITY` | 0.10 | `p_under_18` at/above which `possible_minor_risk` is set. |
+| `PPA_GENDER_SURETY_THRESHOLD` | 0.80 | Minimum gender score, otherwise `Unsure`. |
+| `PPA_ORT_INTRA_OP_THREADS` | 0 (= min(4, cores)) | ONNX Runtime threads per model; the "all cores" default measured ~4x slower. |
+| `PPA_FORCE_CPU` | true | Set false to use CUDA/DirectML providers if installed. |
+| `PPA_RATE_LIMIT_PER_MINUTE`, `PPA_MAX_CONCURRENT_REQUESTS`, `PPA_TRUSTED_PROXIES` | 60, 10, loopback | Process-local abuse controls (use a gateway for multi-worker deployments). |
 
 ---
 
-## SonarCloud Analysis
+## Limits you should know about
 
-```powershell
-$env:SONAR_HOST_URL = "https://sonarcloud.io"
-$env:SONAR_TOKEN = "your_sonar_token"
-npx sonarqube-scanner
+* **Age is approximate.** The model's author reports a mean error of 4.5 years on UTKFace (self-reported, not
+  re-measured here). A 3-year bracket is narrower than that error, so it is the *most likely* bracket, shown together
+  with an 80 % range and its probability. It is not age verification.
+* **Gender is a visual appearance classification**, binary, unreliable for children (the author reports 78 % for ages
+  5-12; this service reports `Unsure` below 13) and for atypical presentation. Do not use it for decisions about people.
+* **Animals/birds** are found as whole-animal boxes from the 10 COCO animal classes (cat, dog, horse, sheep, cow,
+  elephant, bear, zebra, giraffe, bird); other species are only caught if a face-like candidate is verified as an animal.
+* Cartoons/paintings/diagrams are *counted* only when a detector or YuNet localises them; otherwise the image-type
+  card reports the type and the face count stays 0.
+* Accuracy has **not** been measured on a labelled benchmark yet - see
+  [docs/EVALUATION_AND_FAIRNESS.md](docs/EVALUATION_AND_FAIRNESS.md) for what was and was not verified, and
+  `scripts/evaluate_fairface.py` to measure it.
+
+---
+
+## Development
+
+```bash
+pip install -r requirements.lock && pip install ruff
+ruff check app tests scripts && ruff format --check app tests scripts
+pytest                                       # unit tests + (if models are built) real-model integration tests
+python scripts/benchmark_latency.py --image portrait.jpg
+python scripts/evaluate_fairface.py --csv fairface_label_val.csv --images <dir>
 ```
 
-- **SonarCloud Project Key**: `hgarg02_project-profile-photo-analyzer`
-- **SonarCloud Organization**: `hgarg02`
-- **Dashboard**: [SonarCloud Project Dashboard](https://sonarcloud.io/dashboard?id=hgarg02_project-profile-photo-analyzer)
+Current state: 214 tests (one needs `PPA_TEST_IMAGES_DIR`); statement and branch coverage of `app/` is 100 % (the real-model integration tests are
+included when the models are built, and skipped otherwise). Set `PPA_TEST_IMAGES_DIR` to also smoke-test your own photos.
 
+```text
+app/
+  api/routes.py            upload validation, endpoints
+  core/config.py           settings (PPA_ env vars)
+  schemas/analysis.py      response schema
+  services/
+    image_utils.py         decoding (EXIF, alpha, limits), crops, annotation
+    quality_service.py     information check, face quality/pose
+    face_service.py        YuNet detection, age/gender with uncertainty
+    classifier_service.py  image type, YOLOX/anime detectors, crop verdicts
+    semantic_service.py    SigLIP2 embeddings and zero-shot scoring
+    label_prompts.py       the zero-shot label taxonomy
+    model_manager.py       model registry, SHA-256 verification, sessions
+    analyzer.py            orchestration and profile policy
+  templates/index.html     UI
+scripts/                   build_models.py, benchmark_latency.py, evaluate_fairface.py
+models/                    ONNX files (git-ignored), manifest.json, label_embeddings.npz
+```

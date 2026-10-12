@@ -1,483 +1,467 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
+import pytest
 from PIL import Image
 
-from app.services.analyzer import analyze_profile_photo_image
-from tests.conftest import MockFace
+from app.schemas.analysis import AnalysisResponse
+from app.services import analyzer as az
+from app.services.face_service import Demographics, DetectedFace
+from tests.conftest import textured
 
-MOCK_PHOTO_TYPE = {
-    "status": "PHOTO_LIKE",
-    "top_class": "a real photograph of a real human person",
-    "top_class_confidence": 0.95,
-    "photo_score": 0.95,
-    "cartoon_score": 0.05,
-    "display_label": "Real Photo",
-    "reason": "Highest scoring category is real photo.",
-    "model_executed": "OpenAI CLIP ViT-B/32",
-}
+SIZE = 600
+BOX_A = [200, 200, 400, 400]  # centred, textured region of the test image
+BOX_B = [20, 100, 120, 200]
+BOX_C = [450, 450, 550, 550]
 
 
-def test_analyzer_no_faces(test_image_rgb):
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=[]),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["face_detected"] is False
-        assert result["face_count"] == 0
-        assert "no human face was detected" in result["reason"].lower()
-        assert result["posting_status"] == "REJECTED"
+def kps_for(box):
+    x1, y1, x2, y2 = box
+    w, h = x2 - x1, y2 - y1
+    return np.array(
+        [
+            [x1 + 0.3 * w, y1 + 0.35 * h],
+            [x1 + 0.7 * w, y1 + 0.35 * h],
+            [x1 + 0.5 * w, y1 + 0.55 * h],
+            [x1 + 0.35 * w, y1 + 0.8 * h],
+            [x1 + 0.65 * w, y1 + 0.8 * h],
+        ],
+        dtype=np.float32,
+    )
 
 
-def test_analyzer_no_information():
-    # Pure blank white image
-    blank_img = Image.new("RGB", (300, 300), color=(255, 255, 255))
-    result = analyze_profile_photo_image(blank_img)
-    assert result["accepted"] is False
-    assert result["has_information"] is False
+def det(box, score=0.95):
+    return DetectedFace(bbox=list(box), det_score=score, kps=kps_for(box))
+
+
+def verdict(kind, face_type="", label="", confidence=0.9):
+    return {
+        "verdict": kind,
+        "face_type": face_type or ("human" if kind == "human" else "unsure"),
+        "label": label or {"human": "Real human face"}.get(kind, "Unsure (closest: Painting / Sketch)"),
+        "confidence": confidence,
+        "margin": 0.5,
+        "scores": {},
+    }
+
+
+HUMAN = verdict("human")
+CAT = verdict("non_human", "animal", "Animal face", 0.88)
+UNSURE = verdict("unsure")
+NOT_FACE = verdict("not_face", "not_a_face", "Not a face")
+UNAVAILABLE = verdict("unavailable", "unsure", "Unsure (verification model unavailable)", None)
+
+PHOTO = {
+    "status": "PHOTO_LIKE", "top_class": "Real Photo", "top_class_confidence": 0.97, "photo_score": 0.98,
+    "cartoon_score": 0.02, "display_label": "Real Photo", "model_executed": "SigLIP2 test", "all_predictions": [],
+    "scores": {}, "reason": "photographic",
+}  # fmt: skip
+NON_PHOTO = {**PHOTO, "status": "NON_PHOTO", "display_label": "Painting / Sketch", "reason": "painted"}
+
+
+def adult(age=34.0, gender="Female", p_under_18=0.0):
+    group = f"{int(age // 3 * 3)} to {int(age // 3 * 3 + 3)}"
+    return Demographics(
+        age_group=group, estimated_age=age, age_range=[age - 8, age + 8], age_confidence=0.19,
+        p_under_18=p_under_18, age_status="Estimated", gender=gender, gender_confidence=0.97,
+        model="Age model test",
+    )  # fmt: skip
+
+
+class Harness:
+    """Replaces every model-backed collaborator of the analyzer with controllable fakes."""
+
+    def __init__(self):
+        self.faces: list[DetectedFace] = []
+        self.face_model: str | None = "YuNet test"
+        self.entities: list[dict] = []
+        self.entity_models: list[str] = ["YOLOX test"]
+        self.verdicts: dict[tuple, dict] = {}
+        self.default_verdict = HUMAN
+        self.image_type = dict(PHOTO)
+        self.demographics = adult()
+        self.semantic_available = True
+
+    def _classify_boxes(self, image, boxes):
+        return [self.verdicts.get(tuple(b), self.default_verdict) for b in boxes]
+
+    def run(self, image: np.ndarray | None = None):
+        image = textured(SIZE) if image is None else image
+        pil = Image.fromarray(image[:, :, ::-1])
+        with (
+            patch.object(az, "detect_faces", side_effect=lambda img: (self.faces, self.face_model)),
+            patch.object(az, "detect_non_human_entities", side_effect=lambda img: (self.entities, self.entity_models)),
+            patch.object(az, "classify_boxes", side_effect=self._classify_boxes),
+            patch.object(az, "classify_image_type", side_effect=lambda img: self.image_type),
+            patch.object(az, "predict_face_demographics", side_effect=lambda *a, **k: self.demographics),
+            patch.object(az.semantic_service, "is_available", side_effect=lambda: self.semantic_available),
+        ):
+            result = az.analyze_profile_photo_image(pil, filename="p.jpg", format_detected="image/jpeg")
+        AnalysisResponse.model_validate(result)  # the payload must always satisfy the public schema
+        return result
+
+
+@pytest.fixture
+def h():
+    return Harness()
+
+
+def entity(box, face_type="animal", label="Dog", source="YOLOX-S (COCO)", confidence=0.9):
+    return {"face_type": face_type, "label": label, "confidence": confidence, "box_xyxy": list(box), "source": source}
+
+
+# ---- step 2: no information -----------------------------------------------------------------------
+
+
+def test_blank_image_stops_before_any_model_runs(h):
+    with patch.object(az, "classify_image_type") as classify, patch.object(az, "detect_faces") as detect:
+        pil = Image.new("RGB", (300, 300), "white")
+        result = az.analyze_profile_photo_image(pil)
+    classify.assert_not_called()
+    detect.assert_not_called()
+    AnalysisResponse.model_validate(result)
     assert result["posting_status"] == "NO_INFORMATION"
-    assert "no information" in result["reason"].lower()
+    assert result["has_information"] is False
+    assert result["accepted"] is False
+    assert result["real_human_face_count"] == result["other_face_count"] == 0
+    assert result["image_type_check"]["status"] == "NOT_CHECKED"
+    assert result["technical_diagnostics"]["models_executed"] == [az.MODEL_INFO_ANALYZER]
+    assert [s["status"] for s in result["pipeline_steps"]] == ["completed", "failed", "skipped", "skipped"]
 
 
-def test_analyzer_other_faces_only(test_image_rgb):
-    # Zero human faces, but 1 animal detected
-    mock_animal = [
-        {
-            "face_type": "animal",
-            "label": "Dog",
-            "confidence": 0.92,
-            "box_xyxy": [50, 50, 200, 200],
-        }
-    ]
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=[]),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=mock_animal),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["real_human_face_count"] == 0
-        assert result["other_face_count"] == 1
-        assert result["posting_status"] == "NON_PHOTO_WARNING"
-        assert "dog" in result["reason"].lower()
+# ---- steps 3 and 4: one real human face ---------------------------------------------------------
 
 
-def test_analyzer_multiple_faces(test_image_rgb):
-    faces = [MockFace(bbox=[50, 50, 150, 150]), MockFace(bbox=[200, 200, 300, 300])]
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["face_count"] == 2
-        assert "exactly one" in result["reason"].lower()
+def test_single_real_human_passes_with_full_demographics(h):
+    h.faces = [det(BOX_A)]
+    result = h.run()
+    assert result["accepted"] is True
+    assert result["posting_status"] == "INITIAL_CHECKS_PASSED"
+    assert result["real_human_face_count"] == 1 and result["other_face_count"] == 0 and result["unsure_face_count"] == 0
+    assert result["total_face_count"] == 1
+    face = result["human_faces"][0]
+    assert face["gender"] == "Female" and face["age_group"] == "33 to 36" and face["age_status"] == "Estimated"
+    assert face["age_range"] == [26.0, 42.0] and face["p_under_18"] == 0.0 and face["possible_minor_risk"] is False
+    assert face["verification_confidence"] == 0.9 and face["is_primary"] is True
+    assert face["face_visibility"]["status"] == "LIKELY_COMPLETE"
+    # legacy single-face fields mirror the face
+    assert result["estimated_age_group"] == "33 to 36" and result["gender_presentation_prediction"] == "Female"
+    assert result["age_gender_prediction_performed"] is True
+    assert result["age_prediction_error"] is None and result["gender_prediction_error"] is None
+    assert result["summary"].startswith("1 real human face(s); 0 non-human faces")
+    assert [s["status"] for s in result["pipeline_steps"]] == ["completed"] * 4
+    models = result["technical_diagnostics"]["models_executed"]
+    assert models[0] == az.MODEL_INFO_ANALYZER and "Age model test" in models and "YuNet test" in models
+    assert result["original_image"].startswith("data:image/jpeg")
+    assert result["annotated_image"].startswith("data:image/jpeg")
 
 
-def test_analyzer_single_face_approved(test_image_rgb):
-    faces = [MockFace(bbox=[150, 150, 350, 350], age=27.0, gender=0)]
-    mock_vis = {
-        "status": "LIKELY_COMPLETE",
-        "reason": "Complete face",
-        "face_box_touches_image_edge": False,
-        "sharpness_score": 85.0,
-        "landmarks_available": True,
-        "landmarks_inside_image": True,
-    }
-    mock_type = {
-        "status": "PHOTO_LIKE",
-        "top_class": "a real photograph of a real human person",
-        "display_label": "Real Photo",
-        "photo_score": 0.95,
-        "model_executed": "OpenAI CLIP ViT-B/32",
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=mock_type),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-        patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is True
-        assert result["posting_status"] == "INITIAL_CHECKS_PASSED"
-        assert result["face_count"] == 1
-        assert result["estimated_age_group"] == "27 to 30"
-        assert result["gender_presentation_prediction"] == "female-presentation prediction"
-        assert result["original_image"].startswith("data:image/jpeg;base64,")
-        assert result["annotated_image"].startswith("data:image/jpeg;base64,")
+def test_demographics_run_for_the_face_even_when_image_type_is_unsure(h):
+    """Regression: an uncertain image-level label used to switch demographics off for real faces."""
+    h.faces = [det(BOX_A)]
+    h.image_type = {**PHOTO, "status": "NEEDS_REVIEW"}
+    result = h.run()
+    assert result["human_faces"][0]["age_status"] == "Estimated"
+    assert result["posting_status"] == "MANUAL_REVIEW_REQUIRED"
+    assert result["accepted"] is False
 
 
-def test_analyzer_human_and_other_faces(test_image_rgb):
-    faces = [MockFace(bbox=[150, 150, 350, 350], age=27.0, gender=0)]
-    mock_animal = [
-        {
-            "face_type": "animal",
-            "label": "Cat",
-            "confidence": 0.88,
-            "box_xyxy": [10, 10, 80, 80],
-        }
-    ]
-    mock_vis = {
-        "status": "LIKELY_COMPLETE",
-        "reason": "Complete face",
-        "face_box_touches_image_edge": False,
-        "sharpness_score": 85.0,
-        "landmarks_available": True,
-        "landmarks_inside_image": True,
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=mock_animal),
-        patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["posting_status"] == "NON_PHOTO_WARNING"
-        assert result["other_face_count"] == 1
-        assert "cat" in result["reason"].lower()
+def test_non_photo_image_with_a_verified_human_needs_review(h):
+    h.faces = [det(BOX_A)]
+    h.image_type = NON_PHOTO
+    result = h.run()
+    assert result["posting_status"] == "MANUAL_REVIEW_REQUIRED"
+    assert "non-photo" in result["reason"]
+    assert result["image_type_review_required"] is True
 
 
-def test_analyzer_non_photo_warning(test_image_rgb):
-    faces = [MockFace(bbox=[150, 150, 350, 350])]
-    mock_type = {
-        "status": "NON_PHOTO",
-        "top_class": "a cartoon drawing of a person",
-        "display_label": "Cartoon Image",
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=mock_type),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["posting_status"] == "NON_PHOTO_WARNING"
-        assert "cartoon" in result["posting_reason"].lower()
+def test_unavailable_image_type_model_requires_review(h):
+    h.faces = [det(BOX_A)]
+    h.image_type = {**PHOTO, "status": "UNCERTAIN", "model_executed": None}
+    result = h.run()
+    assert result["posting_status"] == "MANUAL_REVIEW_REQUIRED"
+    assert az.MODEL_INFO_ANALYZER in result["technical_diagnostics"]["models_executed"]
 
 
-def test_analyzer_minor_risk(test_image_rgb):
-    faces = [MockFace(bbox=[150, 150, 350, 350], age=15.0)]
-    mock_vis = {
-        "status": "LIKELY_COMPLETE",
-        "reason": "Complete face",
-        "face_box_touches_image_edge": False,
-        "sharpness_score": 85.0,
-        "landmarks_available": True,
-        "landmarks_inside_image": True,
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-        patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["posting_status"] == "AGE_VERIFICATION_REQUIRED"
-        assert result["possible_minor_risk"] is True
-        assert result["age_verification_required"] is True
+def test_blurry_face_is_not_accepted(h):
+    h.faces = [det(BOX_A)]
+    flat = textured(SIZE)
+    flat[200:400, 200:400] = 140  # smooth face, but the rest of the image still has detail
+    flat[0:100, 0:100] = np.random.default_rng(3).integers(0, 255, (100, 100, 3), dtype=np.uint8)
+    result = h.run(flat)
+    assert result["posting_status"] == "REJECTED_OR_REVIEW"
+    assert "blurry" in result["reason"]
 
 
-def test_analyzer_poor_visibility(test_image_rgb):
-    faces = [MockFace(bbox=[150, 150, 350, 350])]
-    mock_vis = {
-        "status": "PARTIAL_OR_CROPPED",
-        "reason": "The face box is too close to an image edge.",
-        "face_box_touches_image_edge": True,
-        "sharpness_score": 85.0,
-        "landmarks_available": True,
-        "landmarks_inside_image": True,
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-        patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["posting_status"] == "REJECTED_OR_REVIEW"
+def test_unsure_age_is_never_accepted(h):
+    h.faces = [det(BOX_A)]
+    h.demographics = Demographics(age_group="Unsure", age_status="Unsure", p_under_18=0.01, gender="Unsure", model="m")
+    result = h.run()
+    assert result["posting_status"] == "AGE_ESTIMATION_UNAVAILABLE"
+    assert result["age_prediction_error"] and result["gender_prediction_error"]
 
 
-def test_analyzer_attribute_extraction_exception(test_image_rgb):
-    faces = [MockFace(bbox=[150, 150, 350, 350])]
-    mock_vis = {
-        "status": "LIKELY_COMPLETE",
-        "reason": "Complete face",
-        "face_box_touches_image_edge": False,
-        "sharpness_score": 85.0,
-        "landmarks_available": True,
-        "landmarks_inside_image": True,
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-        patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
-        patch(
-            "app.services.analyzer.predict_face_demographics",
-            side_effect=RuntimeError("Extraction failed"),
+def test_possible_minor_requires_age_verification(h):
+    h.faces = [det(BOX_A)]
+    h.demographics = adult(age=16.0, p_under_18=0.7)
+    result = h.run()
+    assert result["posting_status"] == "AGE_VERIFICATION_REQUIRED"
+    assert result["possible_minor_risk"] is True and result["age_verification_required"] is True
+    assert "70%" in result["reason"]
+    assert result["human_faces"][0]["possible_minor_risk"] is True
+
+
+def test_missing_age_model_reports_not_detected(h):
+    h.faces = [det(BOX_A)]
+    h.demographics = Demographics()
+    result = h.run()
+    assert result["human_faces"][0]["age_group"] == "Not Detected"
+    assert result["posting_status"] == "AGE_ESTIMATION_UNAVAILABLE"
+    assert result["age_gender_prediction_performed"] is False
+    assert result["pipeline_steps"][3]["status"] == "skipped"
+    assert "Age model test" not in result["technical_diagnostics"]["models_executed"]
+
+
+# ---- step 3: counting every kind of face ----------------------------------------------------------
+
+
+def test_multiple_real_humans_each_get_demographics_in_reading_order(h):
+    h.faces = [det(BOX_C), det(BOX_B), det(BOX_A)]
+    result = h.run()
+    assert result["real_human_face_count"] == 3
+    assert result["posting_status"] == "REJECTED"
+    assert "found 3" in result["reason"]
+    assert [f["box_xyxy"] for f in result["human_faces"]] == [BOX_B, BOX_A, BOX_C]  # top-to-bottom, left-to-right
+    assert [f["face_id"] for f in result["human_faces"]] == [1, 2, 3]
+    assert all(f["age_status"] == "Estimated" for f in result["human_faces"])
+    assert result["estimated_age_group"] == "Not available" and result["face_count"] == 3
+    assert result["age_verification_required"] is True
+
+
+def test_non_human_faces_are_counted_separately_and_never_aged(h):
+    h.faces = [det(BOX_A), det(BOX_C)]
+    h.verdicts = {tuple(BOX_C): CAT}
+    result = h.run()
+    assert result["real_human_face_count"] == 1
+    assert result["other_face_count"] == 1 and result["total_face_count"] == 2
+    assert result["other_faces"][0]["face_type"] == "animal" and result["other_faces"][0]["verified_by"] == "SigLIP2"
+    assert result["posting_status"] == "NON_PHOTO_WARNING"
+    assert "Animal face" in result["reason"]
+    assert len(result["human_faces"]) == 1
+
+
+def test_animals_without_a_yunet_face_are_found_by_the_entity_detector(h):
+    h.entities = [entity([100, 100, 300, 300], label="Dog")]
+    h.verdicts = {(100, 100, 300, 300): CAT}
+    result = h.run()
+    assert result["real_human_face_count"] == 0
+    assert result["other_faces"][0]["label"] == "Dog"
+    assert result["posting_status"] == "NON_PHOTO_WARNING"
+    assert "No real human face was detected" in result["reason"]
+    assert result["human_faces"] == [] and result["estimated_age_group"] == "Not Detected"
+    assert result["pipeline_steps"][3]["status"] == "skipped"
+
+
+def test_person_riding_a_horse_keeps_both(h):
+    """A human face whose centre is inside an animal's box is still a human (it used to be reclassified)."""
+    h.faces = [det(BOX_A)]
+    h.entities = [entity([100, 100, 500, 580], label="Horse")]
+    h.verdicts = {(100, 100, 500, 580): CAT}
+    result = h.run()
+    assert result["real_human_face_count"] == 1 and result["other_face_count"] == 1
+
+
+def test_yunet_candidate_that_is_really_an_animal_merges_with_the_animal_box(h):
+    h.faces = [det([220, 220, 320, 320])]
+    h.entities = [entity([100, 100, 500, 500], label="Cat")]
+    h.verdicts = {(220, 220, 320, 320): CAT, (100, 100, 500, 500): CAT}
+    result = h.run()
+    assert result["other_face_count"] == 1
+    assert result["other_faces"][0]["label"] == "Cat"
+    assert result["other_faces"][0]["source"] == "YOLOX-S (COCO)"
+
+
+def test_duplicate_animal_reports_collapse_preferring_yolox(h):
+    h.entities = [
+        entity([100, 100, 500, 500], label="Dog", confidence=0.7),
+        entity(
+            [200, 200, 300, 300], face_type="anime", label="Anime / Cartoon Character", source="anime", confidence=0.9
         ),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["posting_status"] == "AGE_ESTIMATION_UNAVAILABLE"
-
-
-def test_analyzer_age_not_available(test_image_rgb):
-    faces = [MockFace(bbox=[150, 150, 350, 350])]
-    mock_vis = {
-        "status": "LIKELY_COMPLETE",
-        "reason": "Complete face",
-        "face_box_touches_image_edge": False,
-        "sharpness_score": 85.0,
-        "landmarks_available": True,
-        "landmarks_inside_image": True,
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-        patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
-        patch(
-            "app.services.analyzer.predict_face_demographics",
-            return_value=(
-                "Not available",
-                None,
-                None,
-                "male-presentation prediction",
-                None,
-            ),
-        ),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["posting_status"] == "AGE_ESTIMATION_UNAVAILABLE"
-
-
-def test_analyzer_face_matches_non_human_entity(test_image_rgb):
-    faces = [MockFace(bbox=[50, 50, 150, 150])]
-    mock_anime = [
-        {
-            "face_type": "cartoon_or_illustration",
-            "label": "Anime Character",
-            "confidence": 0.89,
-            "box_xyxy": [50, 50, 150, 150],
-        }
     ]
+    h.verdicts = {(100, 100, 500, 500): CAT, (200, 200, 300, 300): CAT}
+    result = h.run()
+    assert result["other_face_count"] == 1
+    assert result["other_faces"][0]["label"] == "Dog"
+
+
+def test_two_separate_animals_stay_separate(h):
+    h.entities = [entity([10, 10, 100, 100], label="Cat"), entity([400, 400, 550, 550], label="Dog")]
+    h.verdicts = {(10, 10, 100, 100): CAT, (400, 400, 550, 550): CAT}
+    result = h.run()
+    assert [o["label"] for o in result["other_faces"]] == ["Cat", "Dog"]
+    assert [o["face_id"] for o in result["other_faces"]] == [1, 2]
+
+
+def test_unverifiable_candidates_are_reported_as_unsure_never_guessed(h):
+    h.faces = [det(BOX_A)]
+    h.default_verdict = UNSURE
+    result = h.run()
+    assert result["real_human_face_count"] == 0 and result["unsure_face_count"] == 1
+    assert result["posting_status"] == "MANUAL_REVIEW_REQUIRED"
+    assert result["unsure_faces"][0]["reason"].startswith("The model could not tell")
+    assert result["face_detected"] is True
+    assert "could not be verified" in result["region_note"]
+
+
+def test_unavailable_verification_model_is_stated_not_hidden(h):
+    h.faces = [det(BOX_A)]
+    h.default_verdict = UNAVAILABLE
+    h.semantic_available = False
+    result = h.run()
+    assert "verification model is unavailable" in result["unsure_faces"][0]["reason"]
+    assert az.MODEL_NAME_SIGLIP not in result["technical_diagnostics"]["models_executed"]
+
+
+def test_one_human_plus_unverified_candidate_needs_review(h):
+    h.faces = [det(BOX_A), det(BOX_C)]
+    h.verdicts = {tuple(BOX_C): UNSURE}
+    result = h.run()
+    assert result["posting_status"] == "MANUAL_REVIEW_REQUIRED"
+    assert result["real_human_face_count"] == 1 and result["unsure_face_count"] == 1
+
+
+def test_false_face_candidates_are_dropped_and_counted(h):
+    h.faces = [det(BOX_A), det(BOX_C)]
+    h.verdicts = {tuple(BOX_C): NOT_FACE}
+    result = h.run()
+    assert result["real_human_face_count"] == 1 and result["other_face_count"] == 0
+    assert result["technical_diagnostics"]["rejected_candidate_count"] == 1
+    assert result["accepted"] is True
+
+
+def test_no_faces_at_all(h):
+    result = h.run()
+    assert result["posting_status"] == "REJECTED"
+    assert result["reason"] == "No human face was detected."
+    assert result["face_detected"] is False and result["total_face_count"] == 0
+    assert result["face_regions_xyxy"] == []
+    assert "No face region" in result["region_note"]
+
+    h.image_type = NON_PHOTO
+    result = h.run()
+    assert result["posting_status"] == "NON_PHOTO_WARNING"
+    assert "non-photo image (Painting / Sketch)" in result["reason"]
+
+
+def test_face_detector_failure_is_visible_in_the_pipeline_steps(h):
+    h.face_model = None
+    h.entity_models = []
+    h.semantic_available = False
+    result = h.run()
+    assert result["pipeline_steps"][2]["status"] == "failed"
+    assert "could not run" in result["pipeline_steps"][2]["detail"]
+    assert result["technical_diagnostics"]["models_executed"] == [az.MODEL_INFO_ANALYZER, "SigLIP2 test"]
+
+
+# ---- entity resolution rules ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["human", "not_face"])
+def test_detector_hit_on_a_real_face_or_non_face_is_discarded(kind):
+    assert az._entity_item(entity([0, 0, 10, 10], face_type="anime"), verdict(kind)) is None
+
+
+def test_anime_detector_alone_is_unverified_not_confirmed():
+    item, bucket = az._entity_item(entity([0, 0, 10, 10], face_type="anime", label="Anime"), UNSURE)
+    assert bucket == az.BUCKET_UNSURE and "detector only" in item["label"]
+    item, bucket = az._entity_item(entity([0, 0, 10, 10], face_type="anime", label="Anime"), UNAVAILABLE)
+    assert bucket == az.BUCKET_UNSURE
+
+
+def test_animal_detector_alone_is_kept_and_labelled_detector_only():
+    item, bucket = az._entity_item(entity([0, 0, 10, 10], label="Dog"), UNSURE)
+    assert bucket == az.BUCKET_OTHER and item["verified_by"] == "detector" and item["label"] == "Dog"
+
+
+def test_semantic_verdict_overrides_detector_type_when_they_disagree():
+    drawn = verdict("non_human", "cartoon_or_illustration", "Cartoon / illustration", 0.8)
+    item, _ = az._entity_item(entity([0, 0, 10, 10], label="Dog"), drawn)
+    assert item["face_type"] == "cartoon_or_illustration" and item["verified_by"] == "SigLIP2"
+
+    item, _ = az._entity_item(entity([0, 0, 10, 10], face_type="anime", label="Anime"), CAT)
+    assert item["face_type"] == "animal"
+
+    anime_ok = verdict("non_human", "anime", "Anime / manga character", 0.9)
+    item, _ = az._entity_item(entity([0, 0, 10, 10], face_type="anime", label="Anime"), anime_ok)
+    assert item["label"] == "Anime" and item["verified_by"] == "SigLIP2"
+
+    bird = verdict("non_human", "bird", "Bird", 0.9)
+    item, _ = az._entity_item(entity([0, 0, 10, 10], face_type="animal", label="Cat"), bird)
+    assert item["label"] == "Cat" and item["verified_by"] == "SigLIP2"
+
+
+# ---- policy / summary / misc ----------------------------------------------------------------------
+
+
+def test_summary_groups_non_human_labels():
+    others = [{"label": "Dog"}, {"label": "Dog"}, {"label": "Bird"}]
+    text = az._summary([{}], others, [{}, {}])
+    assert text == "1 real human face(s); 3 non-human face(s): 2 x Dog, 1 x Bird; 2 unverified candidate(s)."
+
+
+def test_decide_with_non_photo_and_no_faces():
+    accepted, status, reason = az._decide([], [], [], {"status": "NON_PHOTO", "display_label": "Diagram"})
+    assert (accepted, status) == (False, "NON_PHOTO_WARNING") and "Diagram" in reason
+
+
+def test_metadata_is_reported_in_diagnostics(h):
+    from app.services.image_utils import DecodedImage
+
+    h.faces = [det(BOX_A)]
+    meta = DecodedImage(Image.new("RGB", (4, 4)), "image/jpeg", 6000, 4000, True, True)
+    bgr = textured(SIZE)
+    pil = Image.fromarray(bgr[:, :, ::-1])
     with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=mock_anime),
+        patch.object(az, "detect_faces", return_value=(h.faces, "YuNet test")),
+        patch.object(az, "detect_non_human_entities", return_value=([], [])),
+        patch.object(az, "classify_boxes", side_effect=lambda img, boxes: [HUMAN] * len(boxes)),
+        patch.object(az, "classify_image_type", return_value=PHOTO),
+        patch.object(az, "predict_face_demographics", return_value=adult()),
     ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["real_human_face_count"] == 0
-        assert result["other_face_count"] == 1
-        assert result["posting_status"] == "NON_PHOTO_WARNING"
+        result = az.analyze_profile_photo_image(pil, "x.jpg", "image/jpeg", meta)
+    diag = result["technical_diagnostics"]
+    assert (diag["original_width"], diag["original_height"]) == (6000, 4000)
+    assert diag["exif_orientation_applied"] is True and diag["downscaled_for_analysis"] is True
+    assert diag["processing_time_ms"] == result["processing_time_ms"] > 0
 
 
-def test_analyzer_classification_needs_review(test_image_rgb):
-    faces = [MockFace(bbox=[150, 150, 350, 350], age=25.0)]
-    mock_type = {
-        "status": "NEEDS_REVIEW",
-        "top_class": "Ambiguous render",
-        "display_label": "Ambiguous Image",
-        "photo_score": 0.20,
-        "cartoon_score": 0.25,
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=mock_type),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["posting_status"] == "MANUAL_REVIEW_REQUIRED"
-        assert "uncertain" in result["reason"].lower() or "manual" in result["reason"].lower()
+def test_detector_hit_on_a_real_face_is_counted_as_rejected_not_reported(h):
+    h.faces = [det(BOX_A)]
+    h.entities = [entity(BOX_A, face_type="anime", label="Anime", source="anime")]
+    h.verdicts = {tuple(BOX_A): HUMAN}
+    result = h.run()
+    assert result["real_human_face_count"] == 1 and result["other_face_count"] == 0
+    assert result["technical_diagnostics"]["rejected_candidate_count"] == 1
 
 
-def test_analyzer_yunet_detected_face_demographics_flow(test_image_rgb):
-    from app.services.face_service import DetectedFace
-
-    yunet_face = DetectedFace(bbox=[50, 50, 250, 250], det_score=0.96, kps=np.zeros((5, 2)))
-    mock_vis = {
-        "status": "LIKELY_COMPLETE",
-        "reason": "Complete face",
-        "face_box_touches_image_edge": False,
-        "sharpness_score": 85.0,
-        "landmarks_available": True,
-        "landmarks_inside_image": True,
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=[yunet_face]),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-        patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
-        patch(
-            "app.services.analyzer.predict_face_demographics",
-            return_value=("27 to 30", 28.0, 0.88, "male-presentation prediction", 0.91),
-        ),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is True
-        assert result["estimated_age_group"] == "27 to 30"
-        assert result["gender_presentation_prediction"] == "male-presentation prediction"
-        assert "InsightFace GenderAge (multitask CNN)" in result["technical_diagnostics"]["models_executed"]
+def test_anime_detector_only_hit_lands_in_the_unsure_list(h):
+    h.entities = [entity([100, 100, 200, 200], face_type="anime", label="Anime", source="anime")]
+    h.verdicts = {(100, 100, 200, 200): UNSURE}
+    result = h.run()
+    assert result["other_face_count"] == 0 and result["unsure_face_count"] == 1
+    assert "detector only" in result["unsure_faces"][0]["label"]
+    assert result["posting_status"] == "MANUAL_REVIEW_REQUIRED"
 
 
-def test_analyzer_age_unsure_rejected(test_image_rgb):
-    faces = [MockFace(bbox=[150, 150, 350, 350])]
-    mock_vis = {
-        "status": "LIKELY_COMPLETE",
-        "reason": "Complete face",
-        "face_box_touches_image_edge": False,
-        "sharpness_score": 85.0,
-        "landmarks_available": True,
-        "landmarks_inside_image": True,
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-        patch("app.services.analyzer.assess_face_quality", return_value=mock_vis),
-        patch(
-            "app.services.analyzer.predict_face_demographics",
-            return_value=("Unsure", None, None, "male-presentation prediction", 0.85),
-        ),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["posting_status"] == "AGE_ESTIMATION_UNAVAILABLE"
+def test_overlapping_reports_of_the_same_object_collapse_by_iou(h):
+    h.entities = [entity([100, 100, 300, 300], label="Dog"), entity([105, 105, 295, 295], label="Dog", confidence=0.6)]
+    h.verdicts = {(100, 100, 300, 300): CAT, (105, 105, 295, 295): CAT}
+    assert h.run()["other_face_count"] == 1
 
 
-def test_analyzer_classification_uncertain_fails_closed(test_image_rgb):
-    faces = [MockFace(bbox=[150, 150, 350, 350], age=25.0)]
-    mock_type = {
-        "status": "UNCERTAIN",
-        "top_class": "Uncertain",
-        "display_label": "Uncertain",
-        "photo_score": 0.0,
-        "cartoon_score": 0.0,
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=mock_type),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=[]),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["posting_status"] == "MANUAL_REVIEW_REQUIRED"
-        assert "uncertain" in result["reason"].lower() or "manual" in result["reason"].lower()
-
-
-def test_resolve_executed_models_all_branches():
-    from app.services.analyzer import _resolve_executed_models
-
-    image_type_clip = {"model_executed": "OpenAI CLIP ViT-B/32"}
-    # 1. Base with no models running
-    with (
-        patch("app.services.analyzer.get_face_app", return_value=None),
-        patch("app.services.analyzer.get_yunet_detector", return_value=None),
-        patch("app.services.analyzer.get_yolo_session", return_value=None),
-        patch("app.services.analyzer.get_anime_face_session", return_value=None),
-        patch("app.services.analyzer.get_genderage_session", return_value=None),
-    ):
-        models = _resolve_executed_models(
-            image_type_clip,
-            has_ran_face_detection=True,
-            has_ran_entity_detection=True,
-            has_ran_demographics=True,
-        )
-        assert "Image Information & Entropy Analyzer" in models
-        assert "OpenAI CLIP ViT-B/32" in models
-        assert len(models) == 2
-
-    # 2. InsightFace & all sessions active
-    with (
-        patch("app.services.analyzer.get_face_app", return_value=MagicMock()),
-        patch("app.services.analyzer.get_yolo_session", return_value=MagicMock()),
-        patch("app.services.analyzer.get_anime_face_session", return_value=MagicMock()),
-        patch("app.services.analyzer.get_genderage_session", return_value=MagicMock()),
-    ):
-        models = _resolve_executed_models(
-            image_type_clip,
-            has_ran_face_detection=True,
-            has_ran_entity_detection=True,
-            has_ran_demographics=True,
-        )
-        assert "InsightFace Face Detector" in models
-        assert "Ultralytics YOLOv8n (COCO)" in models
-        assert "DeepGHS Anime Face Detector (v1.4n)" in models
-        assert "InsightFace GenderAge (multitask CNN)" in models
-
-    # 3. All stages False (skips detection blocks)
-    models_none_ran = _resolve_executed_models(
-        {"model_executed": None},
-        has_ran_face_detection=False,
-        has_ran_entity_detection=False,
-        has_ran_demographics=False,
-    )
-    assert models_none_ran == ["Image Information & Entropy Analyzer"]
-
-    # 4. Actual execution parameters provided directly (zero overstatement)
-    models_actual = _resolve_executed_models(
-        image_type_clip,
-        has_ran_face_detection=True,
-        has_ran_entity_detection=True,
-        has_ran_demographics=True,
-        actual_face_model="OpenCV YuNet Face Detector (ONNX)",
-        actual_entity_models=["Ultralytics YOLOv8n (COCO)"],
-        actual_demo_model="InsightFace GenderAge (multitask CNN)",
-    )
-    assert "OpenCV YuNet Face Detector (ONNX)" in models_actual
-    assert "Ultralytics YOLOv8n (COCO)" in models_actual
-    assert "InsightFace GenderAge (multitask CNN)" in models_actual
-
-    # 4b. actual_face_model empty string (does not append and does not fallback to session)
-    models_empty_actual = _resolve_executed_models(
-        image_type_clip,
-        has_ran_face_detection=True,
-        actual_face_model="",
-    )
-    assert "YuNet Face Detector (2023mar)" not in models_empty_actual
-
-    # 5. YuNet fallback when face_app is None
-    with (
-        patch("app.services.analyzer.get_last_face_detector_model", return_value=None),
-        patch("app.services.analyzer.get_face_app", return_value=None),
-        patch("app.services.analyzer.get_yunet_detector", return_value=MagicMock()),
-        patch("app.services.analyzer.get_yolo_session", return_value=None),
-        patch("app.services.analyzer.get_anime_face_session", return_value=None),
-        patch("app.services.analyzer.get_genderage_session", return_value=None),
-    ):
-        models_yunet = _resolve_executed_models(image_type_clip, has_ran_face_detection=True)
-        assert "YuNet Face Detector (2023mar)" in models_yunet
-
-
-def test_analyzer_single_human_face_with_non_human_faces(test_image_rgb):
-    faces = [MockFace(bbox=[50, 50, 150, 150], age=25.0)]
-    mock_animal = [
-        {
-            "face_type": "animal",
-            "label": "Dog",
-            "confidence": 0.95,
-            "box_xyxy": [250, 250, 350, 350],
-        }
-    ]
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=MOCK_PHOTO_TYPE),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-        patch("app.services.analyzer.detect_non_human_entities", return_value=mock_animal),
-    ):
-        result = analyze_profile_photo_image(test_image_rgb)
-        assert result["accepted"] is False
-        assert result["real_human_face_count"] == 1
-        assert result["other_face_count"] == 1
-        assert result["posting_status"] == "NON_PHOTO_WARNING"
-        assert "One human face detected, but image also contains 1 non-human face(s)" in result["reason"]
+def test_same_region_reported_by_yunet_and_anime_detector_is_listed_once(h):
+    h.faces = [det([100, 100, 300, 300])]
+    h.entities = [entity([95, 95, 305, 305], face_type="anime", label="Anime", source="anime")]
+    h.default_verdict = UNSURE
+    result = h.run()
+    assert result["unsure_face_count"] == 1

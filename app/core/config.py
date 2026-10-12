@@ -1,76 +1,83 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
 
 class Settings(BaseSettings):
-    """Application runtime configuration."""
+    """Application runtime configuration (override any field with a ``PPA_`` environment variable)."""
 
     model_config = SettingsConfigDict(env_prefix="PPA_", case_sensitive=False)
 
     APP_TITLE: str = "Profile Photo Analyzer"
-    APP_VERSION: str = "3.0.0"
+    APP_VERSION: str = "4.0.0"
+
+    # ---- Upload & decoding limits -------------------------------------------------
     MAX_UPLOAD_BYTES: int = 10 * 1024 * 1024  # 10 MB
-    MAX_IMAGE_DIMENSION: int = 4096
-    MAX_IMAGE_PIXELS: int = 16_000_000  # 16 Megapixels (prevents decompression bombs)
-    ALLOWED_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+    MAX_IMAGE_PIXELS: int = 80_000_000  # decompression-bomb guard on the *decoded* image
+    MAX_IMAGE_DIMENSION: int = 20_000
+    WORKING_MAX_SIDE: int = 2048  # analysis runs on a copy whose longest side is capped here
+    ALLOWED_EXTENSIONS: set[str] = {".jpg", ".jpeg", ".jfif", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 
-    # Detection & Image Quality Parameters
-    PHOTO_SCORE_THRESHOLD: float = 0.35
-    MIN_SHARPNESS_SCORE: float = 30.0
-    EDGE_MARGIN_RATIO: float = 0.01
-    MIN_EDGE_MARGIN_PIXELS: int = 5
-    MIN_FACE_AREA_RATIO: float = 0.02
-    MAX_FACE_AREA_RATIO: float = 0.90
-    MIN_BRIGHTNESS: float = 35.0
-    MAX_BRIGHTNESS: float = 235.0
-
-    # Image Information Check Thresholds
+    # ---- Image information check --------------------------------------------------
     MIN_IMAGE_ENTROPY: float = 0.5
     MIN_IMAGE_STD_DEV: float = 3.0
     MIN_LAPLACIAN_VAR: float = 1.5
 
-    # Confidence & Surety Thresholds
-    HUMAN_FACE_CONF_THRESHOLD: float = 0.60
-    GENDER_SURETY_THRESHOLD: float = 0.60
+    # ---- Face detection -----------------------------------------------------------
+    HUMAN_FACE_CONF_THRESHOLD: float = 0.60  # YuNet candidate threshold (candidates are verified later)
+    FACE_NMS_IOU: float = 0.40
+    SMALL_IMAGE_UPSCALE_SIDE: int = 1000  # extra 2x detection pass when the longest side is below this
+    ANIMAL_CONF_THRESHOLD: float = 0.45
     ANIME_FACE_CONF_THRESHOLD: float = 0.35
-    ANIMAL_CONF_THRESHOLD: float = 0.35
 
-    # Model Directories and Paths
-    MODELS_DIR: Path = Path(__file__).resolve().parent.parent.parent / "models"
-    MIN_MODEL_FILE_SIZE: int = 50_000  # 50 KB minimum threshold for model integrity
-    YUNET_MODEL_NAME: str = "face_detection_yunet_2023mar.onnx"
-    GENDERAGE_MODEL_NAME: str = "genderage.onnx"
-    ANIME_FACE_MODEL_NAME: str = "anime_face_v1.4_n.onnx"
-    YOLO_MODEL_NAME: str = "yolov8n.onnx"
+    # ---- Semantic (SigLIP2) verification ----------------------------------------
+    SEMANTIC_TEMPERATURE: float = 100.0  # softmax sharpness over prompt similarities (not a calibrated probability)
+    HUMAN_MIN_PROB: float = 0.60  # a crop is a *verified real human face* only above this share...
+    HUMAN_MIN_MARGIN: float = 0.25  # ...and when it beats the runner-up class by this much
+    NONHUMAN_MAX_HUMAN_PROB: float = 0.25  # below this human share a crop is declared non-human
+    NOT_FACE_MIN_PROB: float = 0.50
+    FACE_CROP_MARGIN: float = 0.15
+    IMAGE_TYPE_MIN_MASS: float = 0.60  # share of probability mass a group needs for a confident image type
 
-    # Download URLs for pre-trained lightweight models (<250MB total)
-    YUNET_URL: str = "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx"
-    GENDERAGE_URL: str = "https://huggingface.co/MonsterMMORPG/tools/resolve/main/genderage.onnx"
-    ANIME_FACE_URL: str = (
-        "https://huggingface.co/deepghs/anime_face_detection/resolve/main/face_detect_v1.4_n/model.onnx"
-    )
-    YOLO_URL: str = (
-        "https://huggingface.co/SpotLab/YOLOv8Detection/resolve/3005c6751fb19cdeb6b10c066185908faf66a097/yolov8n.onnx"
-    )
+    # ---- Age / gender -------------------------------------------------------------
+    AGE_CROP_MARGINS: tuple[float, ...] = (0.0, 0.2, 0.4)  # every margin is also evaluated mirrored
+    AGE_MODEL_MAE_YEARS: float = 4.5  # self-reported by the model author on UTKFace; NOT measured here
+    AGE_SIGMA_PER_MAE: float = 1.25  # MAE -> Gaussian sigma for a normal error assumption
+    AGE_UNSURE_VIEW_STD: float = 6.0  # views of the same face disagree more than this => age is Unsure
+    AGE_MIN_CREDIBLE: float = 1.0
+    AGE_MAX_CREDIBLE: float = 90.0
+    AGE_INTERVAL_Z: float = 1.2816  # 80% two-sided interval
+    MINOR_RISK_PROBABILITY: float = 0.10  # P(age < 18) at or above this flags possible minor
+    ADULT_AGE_YEARS: float = 18.0
+    GENDER_SURETY_THRESHOLD: float = 0.80
+    GENDER_MIN_AGE_YEARS: float = 13.0  # the model is documented as unreliable for children
 
-    # Legacy compatibility settings
-    DET_SIZE: tuple[int, int] = (640, 640)
-    INSIGHTFACE_MODEL_NAME: str = "buffalo_l"
-    CLIP_MODEL_NAME: str = "openai/clip-vit-base-patch32"
-    FAIRFACE_MODEL_NAME: str = "dima806/fairface_age_image_detection"
+    # ---- Face quality -------------------------------------------------------------
+    MIN_SHARPNESS_SCORE: float = 20.0  # Laplacian variance of the face resized to 112x112
+    EDGE_MARGIN_RATIO: float = 0.01
+    MIN_EDGE_MARGIN_PIXELS: int = 5
+    MIN_FACE_AREA_RATIO: float = 0.02
+    MAX_FACE_AREA_RATIO: float = 0.90
+    MIN_FACE_SIDE_PX: int = 48  # smaller faces are too low-resolution for age/gender
+    MAX_YAW_RATIO: float = 0.40  # |nose offset| / eye distance above this => not frontal
+    MIN_BRIGHTNESS: float = 35.0
+    MAX_BRIGHTNESS: float = 235.0
+
+    # ---- Models -------------------------------------------------------------------
+    MODELS_DIR: Path = PROJECT_ROOT / "models"
+    MIN_MODEL_FILE_SIZE: int = 50_000
     FORCE_CPU: bool = True
+    ORT_INTRA_OP_THREADS: int = 0  # 0 = onnxruntime default
+    DOWNLOAD_TIMEOUT_SECONDS: int = 60
 
-    # Environment & Deployment Mode
+    # ---- Environment & production controls ---------------------------------------
     ENVIRONMENT: str = "development"
     REQUIRE_API_KEY_IN_PRODUCTION: bool = True
-
-    # Classifier Fallback Policy
-    ALLOW_HEURISTIC_ACCEPTANCE: bool = False
-    REQUIRE_NEURAL_CLASSIFIER: bool = False
-
-    # Production Controls: Rate Limiting & Auth & Concurrency
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_PER_MINUTE: int = 60
     MAX_CONCURRENT_REQUESTS: int = 10
@@ -78,18 +85,16 @@ class Settings(BaseSettings):
     API_KEY_HEADER: str = "X-API-Key"
     TRUSTED_PROXIES: list[str] = ["127.0.0.1", "::1"]
     MAX_TRACKED_IPS: int = 10_000
-
     CORS_ORIGINS: list[str] = ["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:3000"]
     CORS_ALLOW_CREDENTIALS: bool = False
 
     @model_validator(mode="after")
     def validate_production_security(self) -> Settings:
-        if self.ENVIRONMENT.lower() == "production":
-            if self.REQUIRE_API_KEY_IN_PRODUCTION and not self.API_KEY:
-                raise ValueError(
-                    "Production mode (ENVIRONMENT='production') requires PPA_API_KEY to be configured for API-key authentication."
-                )
-            self.REQUIRE_NEURAL_CLASSIFIER = True
+        if self.ENVIRONMENT.lower() == "production" and self.REQUIRE_API_KEY_IN_PRODUCTION and not self.API_KEY:
+            raise ValueError(
+                "Production mode (ENVIRONMENT='production') requires PPA_API_KEY to be configured "
+                "for API-key authentication."
+            )
         return self
 
 

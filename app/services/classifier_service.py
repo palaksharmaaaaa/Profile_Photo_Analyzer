@@ -1,47 +1,24 @@
+"""Image-type screening, non-human entity localisation and crop-level human-face verification."""
+
 import logging
+from functools import lru_cache
 from typing import Any
 
 import cv2
 import numpy as np
-from PIL import Image
 
 from app.core.config import settings
-from app.services.image_utils import clamp_box
-from app.services.model_manager import get_anime_face_session, get_yolo_session
+from app.services import semantic_service
+from app.services.image_utils import clamp_box, crop_square
+from app.services.model_manager import MODEL_SPECS, get_session
 
 logger = logging.getLogger(__name__)
 
-LABEL_REAL_PHOTO = "a real photograph of a real human person"
-LABEL_CARTOON = "a cartoon drawing of a person"
-LABEL_ANIME = "an anime or Ghibli-style illustration"
-LABEL_DIGITAL_PAINTING = "a digital painting of a fictional character"
-LABEL_3D = "a computer-generated 3D character"
-LABEL_OBJECT = "a photograph or picture of an object with no person"
-LABEL_DIAGRAM = "a biological or scientific diagram"
-LABEL_UNCERTAIN = "uncertain or unverified image type"
-MODEL_NAME_HEURISTIC_SCREENER = "Heuristic CV Screener"
+MODEL_NAME_YOLOX = MODEL_SPECS["yolox"].display_name
+MODEL_NAME_ANIME_FACE = MODEL_SPECS["anime_face"].display_name
+MODEL_NAME_SIGLIP = semantic_service.MODEL_NAME_SIGLIP
 
-IMAGE_LABELS = [
-    LABEL_REAL_PHOTO,
-    LABEL_CARTOON,
-    LABEL_ANIME,
-    LABEL_DIGITAL_PAINTING,
-    LABEL_3D,
-    LABEL_OBJECT,
-    LABEL_DIAGRAM,
-]
-
-SYNTHETIC_KEYWORDS = (
-    "cartoon",
-    "anime",
-    "illustration",
-    "digital painting",
-    "computer-generated",
-    "diagram",
-)
-
-KEYWORD_REAL_PHOTO = "real photograph"
-
+# COCO class id -> (api face_type, display label). Only animals that can have a face are of interest.
 COCO_ANIMAL_CLASSES: dict[int, tuple[str, str]] = {
     14: ("bird", "Bird"),
     15: ("animal", "Cat"),
@@ -55,479 +32,292 @@ COCO_ANIMAL_CLASSES: dict[int, tuple[str, str]] = {
     23: ("animal", "Giraffe"),
 }
 
-MODEL_NAME_YOLO = "Ultralytics YOLOv8n (COCO)"
-MODEL_NAME_ANIME_FACE = "DeepGHS Anime Face Detector (v1.4n)"
+DETECTOR_INPUT = 640
+LETTERBOX_PAD = 114
+PHOTO_GROUP = "photo"
+SYNTHETIC_GROUP = "synthetic"
 
-_clip_pipeline = None
-_last_executed_entity_models: list[str] = []
-
-
-def get_last_executed_entity_models() -> list[str]:
-    """Return list of entity models that executed inference without failure in the last call."""
-    return list(_last_executed_entity_models)
-
-
-def get_clip_pipeline():
-    """Lazy initialize the CLIP zero-shot classification pipeline (legacy/fallback)."""
-    global _clip_pipeline
-    if _clip_pipeline is None:
-        try:
-            from transformers import pipeline
-
-            device = -1 if settings.FORCE_CPU else 0
-            logger.info("Initializing zero-shot image classifier pipeline...")
-            _clip_pipeline = pipeline(
-                "zero-shot-image-classification",
-                model=settings.CLIP_MODEL_NAME,
-                device=device,
-            )
-        except Exception as exc:
-            logger.warning(f"Could not load Hugging Face CLIP pipeline: {exc}")
-            _clip_pipeline = False
-    return _clip_pipeline if _clip_pipeline is not False else None
+VERDICT_HUMAN = "human"
+VERDICT_NON_HUMAN = "non_human"
+VERDICT_NOT_FACE = "not_face"
+VERDICT_UNSURE = "unsure"
+VERDICT_UNAVAILABLE = "unavailable"
 
 
-def friendly_image_type(top_class: str) -> str:
-    """Map candidate prompt to a clean user-facing title."""
-    norm = (top_class or "").lower()
-    if KEYWORD_REAL_PHOTO in norm:
-        return "Real Photo"
-    if "anime" in norm:
-        return "Anime / Ghibli-style Image"
-    if "cartoon" in norm:
-        return "Cartoon Image"
-    if "digital painting" in norm:
-        return "Digital Painting (Fictional Character)"
-    if "computer-generated" in norm:
-        return "3D / Computer-generated Character"
-    if "diagram" in norm:
-        return "Biological / Scientific Diagram"
-    if "object with no person" in norm:
-        return "Object / No Person"
-    return "Uncertain"
+# --------------------------------------------------------------------------------------
+# Image-type screening (informational; per-face verdicts are decided on the face crops)
+# --------------------------------------------------------------------------------------
 
 
-def _apply_nms(boxes: list[list[int]], scores: list[float], score_threshold: float, nms_threshold: float = 0.45) -> Any:
-    """Run OpenCV non-maximum suppression on detected boxes."""
-    return cv2.dnn.NMSBoxes(boxes, scores, score_threshold, nms_threshold)
-
-
-def _decode_yolo_predictions(
-    output_tensor: np.ndarray,
-    orig_w: int,
-    orig_h: int,
-    score_threshold: float,
-    is_anime: bool = False,
-) -> list[dict[str, Any]]:
-    """Decode YOLO output tensor (shape [1, C, 8400]) into boxes and scores with NMS."""
-    if output_tensor is None or len(output_tensor.shape) != 3:
-        return []
-
-    # Transpose [1, C, 8400] -> [8400, C]
-    features = output_tensor[0].T
-    boxes: list[list[int]] = []
-    scores: list[float] = []
-    labels: list[tuple[str, str]] = []
-
-    scale_x = orig_w / 640.0
-    scale_y = orig_h / 640.0
-
-    if is_anime:
-        confidences = features[:, 4]
-        mask = confidences >= score_threshold
-        valid_rows = features[mask]
-        for row in valid_rows:
-            cx, cy, w, h = row[0], row[1], row[2], row[3]
-            x1 = round((cx - w / 2.0) * scale_x)
-            y1 = round((cy - h / 2.0) * scale_y)
-            bw = round(w * scale_x)
-            bh = round(h * scale_y)
-            boxes.append([x1, y1, bw, bh])
-            scores.append(float(row[4]))
-            labels.append(("cartoon_or_illustration", "Anime / Cartoon Character"))
-    else:
-        class_scores = features[:, 4:]
-        max_scores = np.max(class_scores, axis=1)
-        max_classes = np.argmax(class_scores, axis=1)
-
-        mask = max_scores >= score_threshold
-        valid_rows = features[mask]
-        valid_scores = max_scores[mask]
-        valid_classes = max_classes[mask]
-
-        for row, score, cls_id in zip(valid_rows, valid_scores, valid_classes):
-            cid = int(cls_id)
-            if cid in COCO_ANIMAL_CLASSES:
-                cx, cy, w, h = row[0], row[1], row[2], row[3]
-                x1 = round((cx - w / 2.0) * scale_x)
-                y1 = round((cy - h / 2.0) * scale_y)
-                bw = round(w * scale_x)
-                bh = round(h * scale_y)
-                boxes.append([x1, y1, bw, bh])
-                scores.append(float(score))
-                labels.append(COCO_ANIMAL_CLASSES[cid])
-
-    if not boxes:
-        return []
-
-    indices = _apply_nms(boxes, scores, score_threshold, 0.45)
-    if len(indices) == 0:
-        return []
-
-    results = []
-    for idx in np.asarray(indices).flatten():
-        i = int(idx)
-        bx, by, bw, bh = boxes[i]
-        clamped = list(clamp_box([bx, by, bx + bw, by + bh], orig_w, orig_h))
-        ftype, flabel = labels[i]
-        results.append(
-            {
-                "face_type": ftype,
-                "label": flabel,
-                "confidence": round(scores[i], 3),
-                "box_xyxy": clamped,
-            }
-        )
-    return results
-
-
-def detect_non_human_entities(image_bgr: np.ndarray) -> list[dict[str, Any]]:
-    """
-    Run lightweight YOLOv8 models to detect:
-    1. Animals & Birds (COCO classes)
-    2. Anime & Cartoon faces (DeepGHS model)
-    """
-    global _last_executed_entity_models
-    _last_executed_entity_models = []
-
-    if image_bgr is None or image_bgr.size == 0:
-        return []
-
-    h, w = image_bgr.shape[:2]
-    resized = cv2.resize(image_bgr, (640, 640))
-    blob = (resized.astype(np.float32) / 255.0).transpose(2, 0, 1)[np.newaxis, :, :, :]
-
-    entities: list[dict[str, Any]] = []
-
-    # 1. Animals & Birds via YOLOv8n
-    yolo_session = get_yolo_session()
-    if yolo_session is not None:
-        try:
-            inp_name = yolo_session.get_inputs()[0].name
-            out = yolo_session.run(None, {inp_name: blob})[0]
-            animals = _decode_yolo_predictions(out, w, h, settings.ANIMAL_CONF_THRESHOLD, is_anime=False)
-            entities.extend(animals)
-            _last_executed_entity_models.append(MODEL_NAME_YOLO)
-        except Exception as exc:
-            logger.warning(f"Animal detection failed: {exc}")
-
-    # 2. Anime & Cartoon faces via Anime YOLOv8
-    anime_session = get_anime_face_session()
-    if anime_session is not None:
-        try:
-            inp_name = anime_session.get_inputs()[0].name
-            out = anime_session.run(None, {inp_name: blob})[0]
-            cartoons = _decode_yolo_predictions(out, w, h, settings.ANIME_FACE_CONF_THRESHOLD, is_anime=True)
-            entities.extend(cartoons)
-            _last_executed_entity_models.append(MODEL_NAME_ANIME_FACE)
-        except Exception as exc:
-            logger.warning(f"Anime face detection failed: {exc}")
-
-    return entities
-
-
-def is_biological_diagram_or_drawing(crop_bgr: np.ndarray) -> bool:
-    """
-    Check if a face crop is a biological diagram, schematic, line art,
-    or textbook illustration instead of a photographic face.
-    """
-    if crop_bgr is None or crop_bgr.size == 0:
-        return False
-
-    h, w = crop_bgr.shape[:2]
-    if h < 10 or w < 10:
-        return False
-
-    # 1. White or near-white background ratio
-    white_mask = (crop_bgr[:, :, 0] > 230) & (crop_bgr[:, :, 1] > 230) & (crop_bgr[:, :, 2] > 230)
-    white_ratio = float(np.mean(white_mask))
-
-    # 2. Check skin color coverage in YCrCb color space
-    ycrcb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2YCrCb)
-    cr = ycrcb[:, :, 1]
-    cb = ycrcb[:, :, 2]
-    # Human skin usually falls in Cr: 133-173, Cb: 77-127
-    skin_mask = (cr >= 133) & (cr <= 173) & (cb >= 77) & (cb <= 127)
-    skin_ratio = float(np.mean(skin_mask))
-
-    # If >65% white background and almost no natural skin tones, it's a diagram/drawing
-    if white_ratio > 0.65 and skin_ratio < 0.15:
-        return True
-
-    # 3. High edge sparsity (black lines on solid/light ground)
-    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
-    edge_ratio = float(np.mean(edges > 0))
-
-    return bool(white_ratio > 0.5 and edge_ratio > 0.05 and skin_ratio < 0.1)
-
-
-def _compute_iou(box_a: list[int], box_b: list[int]) -> float:
-    """Compute Intersection over Union between two [x1, y1, x2, y2] boxes."""
-    x_a = max(box_a[0], box_b[0])
-    y_a = max(box_a[1], box_b[1])
-    x_b = min(box_a[2], box_b[2])
-    y_b = min(box_a[3], box_b[3])
-
-    inter_w = max(0, x_b - x_a)
-    inter_h = max(0, y_b - y_a)
-    inter_area = inter_w * inter_h
-    if inter_area == 0:
-        return 0.0
-
-    box_a_area = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
-    box_b_area = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
-    union = box_a_area + box_b_area - inter_area
-    return float(inter_area / union) if union > 0 else 0.0
-
-
-def check_is_non_human_face(
-    face_box: list[int], image_bgr: np.ndarray, non_human_entities: list[dict[str, Any]]
-) -> dict[str, Any] | None:
-    """
-    Check if a face box corresponds to an animal, bird, cartoon, or diagram.
-    Returns entity dict if non-human, or None if genuine human candidate.
-    """
-    # 1. Overlap with detected animal, bird, or anime face
-    for ent in non_human_entities:
-        ent_box = ent["box_xyxy"]
-        iou = _compute_iou(face_box, ent_box)
-        # Check center inside entity box
-        cx = (face_box[0] + face_box[2]) // 2
-        cy = (face_box[1] + face_box[3]) // 2
-        center_inside = (ent_box[0] <= cx <= ent_box[2]) and (ent_box[1] <= cy <= ent_box[3])
-
-        if iou > 0.25 or center_inside:
-            return {
-                "face_type": ent["face_type"],
-                "label": ent["label"],
-                "confidence": ent["confidence"],
-                "box_xyxy": face_box,
-            }
-
-    # 2. Biological diagram check on face crop
-    x1, y1, x2, y2 = clamp_box(face_box, image_bgr.shape[1], image_bgr.shape[0])
-    crop = image_bgr[y1:y2, x1:x2]
-    if is_biological_diagram_or_drawing(crop):
-        return {
-            "face_type": "biological_diagram",
-            "label": "Biological Diagram / Illustration",
-            "confidence": 0.90,
-            "box_xyxy": face_box,
-        }
-
-    return None
-
-
-def is_cartoon_or_illustration(image_bgr: np.ndarray) -> bool:
-    """Detect whether an image exhibits cartoon or digital illustration traits."""
-    if image_bgr.size == 0:
-        return False
-    small = cv2.resize(image_bgr, (128, 128))
-    quantized = small // 32
-    flat_colors = quantized.reshape(-1, 3)
-    unique_colors = len(np.unique(flat_colors, axis=0))
-
-    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 40, 120)
-    edge_ratio = float(np.mean(edges > 0))
-
-    non_edge_mask = edges == 0
-    flat_variance = float(np.var(gray[non_edge_mask])) if np.sum(non_edge_mask) > 100 else 0.0
-
-    is_flat_palette = unique_colors < 120
-    is_hard_outline_flat_texture = edge_ratio > 0.06 and flat_variance < 180.0
-    return bool(is_flat_palette or is_hard_outline_flat_texture)
-
-
-def _classify_via_heuristics(image: Image.Image) -> dict[str, Any]:
-    """Classify image type using resilient computer vision heuristics when CLIP is unavailable."""
-    image_rgb = image.convert("RGB")
-    arr = np.array(image_rgb)
-    arr_bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-
-    # 1. Check biological diagram
-    if is_biological_diagram_or_drawing(arr_bgr):
-        return {
-            "status": "NON_PHOTO",
-            "top_class": LABEL_DIAGRAM,
-            "top_class_confidence": 0.90,
-            "photo_score": 0.05,
-            "cartoon_score": 0.90,
-            "display_label": "Biological / Scientific Diagram",
-            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
-            "all_predictions": [
-                {"label": LABEL_DIAGRAM, "confidence": 0.90},
-                {"label": LABEL_REAL_PHOTO, "confidence": 0.05},
-            ],
-            "scores": {LABEL_DIAGRAM: 0.90, LABEL_REAL_PHOTO: 0.05},
-            "reason": "Image has high line sparsity and vector characteristics of a diagram.",
-        }
-
-    # 2. Check cartoon / digital illustration traits
-    if is_cartoon_or_illustration(arr_bgr):
-        return {
-            "status": "NON_PHOTO",
-            "top_class": LABEL_CARTOON,
-            "top_class_confidence": 0.85,
-            "photo_score": 0.10,
-            "cartoon_score": 0.85,
-            "display_label": "Cartoon / Illustrated Image",
-            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
-            "all_predictions": [
-                {"label": LABEL_CARTOON, "confidence": 0.85},
-                {"label": LABEL_REAL_PHOTO, "confidence": 0.10},
-            ],
-            "scores": {LABEL_CARTOON: 0.85, LABEL_REAL_PHOTO: 0.10},
-            "reason": "Image exhibits flat color palette and hard vector/illustration outlines.",
-        }
-
-    # 3. Fallback when CLIP is unavailable:
-    if settings.REQUIRE_NEURAL_CLASSIFIER:
-        return {
-            "status": "NEEDS_REVIEW",
-            "top_class": LABEL_UNCERTAIN,
-            "top_class_confidence": 0.50,
-            "photo_score": 0.50,
-            "cartoon_score": 0.50,
-            "display_label": "Heuristic Screening (Review Required)",
-            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
-            "all_predictions": [
-                {"label": LABEL_UNCERTAIN, "confidence": 0.50},
-                {"label": LABEL_REAL_PHOTO, "confidence": 0.50},
-            ],
-            "scores": {LABEL_UNCERTAIN: 0.50, LABEL_REAL_PHOTO: 0.50},
-            "reason": "Neural classifier (CLIP) is required but unavailable; heuristic screening requires manual review.",
-        }
-
-    if settings.ALLOW_HEURISTIC_ACCEPTANCE:
-        return {
-            "status": "PHOTO_LIKE",
-            "top_class": LABEL_REAL_PHOTO,
-            "top_class_confidence": 0.85,
-            "photo_score": 0.85,
-            "cartoon_score": 0.15,
-            "display_label": "Real Photo (Heuristic Screened)",
-            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
-            "all_predictions": [
-                {"label": LABEL_REAL_PHOTO, "confidence": 0.85},
-                {"label": LABEL_CARTOON, "confidence": 0.15},
-            ],
-            "scores": {LABEL_REAL_PHOTO: 0.85, LABEL_CARTOON: 0.15},
-            "reason": "Image passed computer vision diagram and illustration screening heuristics.",
-        }
-
+def _unavailable_image_type() -> dict[str, Any]:
     return {
-        "status": "NEEDS_REVIEW",
-        "top_class": LABEL_UNCERTAIN,
-        "top_class_confidence": 0.50,
-        "photo_score": 0.50,
-        "cartoon_score": 0.50,
-        "display_label": "Heuristic Screening (Review Required)",
-        "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
-        "all_predictions": [
-            {"label": LABEL_UNCERTAIN, "confidence": 0.50},
-            {"label": LABEL_REAL_PHOTO, "confidence": 0.50},
-        ],
-        "scores": {LABEL_UNCERTAIN: 0.50, LABEL_REAL_PHOTO: 0.50},
-        "reason": "Zero-shot neural classifier (CLIP) unavailable; heuristic screening requires manual review.",
+        "status": "UNCERTAIN",
+        "top_class": "Unavailable",
+        "top_class_confidence": None,
+        "photo_score": None,
+        "cartoon_score": None,
+        "display_label": "Uncertain",
+        "model_executed": None,
+        "all_predictions": [],
+        "scores": {},
+        "reason": "The SigLIP2 image-type model is unavailable, so the image type was not checked.",
     }
 
 
-def classify_image_type(image: Image.Image) -> dict[str, Any]:
-    """
-    Classify whether image is a real photo, cartoon, anime, 3D character, diagram, or object.
-    Uses zero-shot CLIP classification when available, with resilient computer vision screening.
-    """
-    pipeline_fn = get_clip_pipeline()
+def classify_image_type(image_bgr: np.ndarray) -> dict[str, Any]:
+    """Classify the whole upload as photograph vs cartoon/anime/painting/3D/diagram."""
+    results = semantic_service.classify_images([image_bgr], "image")
+    if not results:
+        return _unavailable_image_type()
 
-    if pipeline_fn is None:
-        return _classify_via_heuristics(image)
+    result = results[0]
+    classes = {c.name: c for c in semantic_service.IMAGE_CLASSES}
+    photo_mass = sum(p for n, p in result.probabilities.items() if classes[n].face_type == PHOTO_GROUP)
+    synthetic_mass = sum(p for n, p in result.probabilities.items() if classes[n].face_type == SYNTHETIC_GROUP)
 
-    try:
-        raw_predictions = pipeline_fn(image.convert("RGB"), candidate_labels=IMAGE_LABELS)
+    if photo_mass >= settings.IMAGE_TYPE_MIN_MASS:
+        status, reason = "PHOTO_LIKE", "Most of the probability mass is on photographic image types."
+    elif synthetic_mass >= settings.IMAGE_TYPE_MIN_MASS:
+        status, reason = "NON_PHOTO", "Most of the probability mass is on illustrated, painted or computer-made types."
+    else:
+        status, reason = "NEEDS_REVIEW", "The image type could not be determined confidently."
 
-        if not isinstance(raw_predictions, list) or not raw_predictions:
-            raise ValueError("No predictions returned by classifier.")
+    predictions = sorted(
+        ({"label": classes[n].display, "confidence": p} for n, p in result.probabilities.items()),
+        key=lambda item: item["confidence"],
+        reverse=True,
+    )
+    winning_group = {"PHOTO_LIKE": PHOTO_GROUP, "NON_PHOTO": SYNTHETIC_GROUP}.get(status)
+    ranked = sorted(result.probabilities.items(), key=lambda kv: -kv[1])
+    shown_name = next((n for n, _ in ranked if classes[n].face_type == winning_group), result.name)
+    shown = classes[shown_name]
+    return {
+        "status": status,
+        "top_class": shown.display,
+        "top_class_confidence": result.probabilities[shown.name],
+        "photo_score": round(photo_mass, 4),
+        "cartoon_score": round(synthetic_mass, 4),
+        "display_label": shown.display,
+        "model_executed": MODEL_NAME_SIGLIP,
+        "all_predictions": predictions,
+        "scores": {item["label"]: item["confidence"] for item in predictions},
+        "reason": reason,
+    }
 
-        predictions = sorted(raw_predictions, key=lambda item: float(item["score"]), reverse=True)
 
-        all_predictions = [
-            {"label": str(item["label"]), "confidence": round(float(item["score"]), 4)}
-            for item in predictions
-            if isinstance(item, dict) and "label" in item and "score" in item
-        ]
+# --------------------------------------------------------------------------------------
+# Crop-level verification of what a detected box contains
+# --------------------------------------------------------------------------------------
 
-        if not all_predictions:
-            raise ValueError("Invalid prediction format returned.")
 
-        top = all_predictions[0]
-        top_label = top["label"]
-        normalized = top_label.lower()
+def _verdict_from_probabilities(result: semantic_service.SemanticResult) -> dict[str, Any]:
+    """Turn SigLIP2 prompt scores into a verdict, preferring ``unsure`` over guessing."""
+    probs = result.probabilities
+    human = probs.get("real_human", 0.0)
+    base = {"scores": probs, "margin": result.margin}
 
-        photo_score = max(
-            (item["confidence"] for item in all_predictions if KEYWORD_REAL_PHOTO in item["label"].lower()),
-            default=0.0,
-        )
+    if result.name == "real_human" and human >= settings.HUMAN_MIN_PROB and result.margin >= settings.HUMAN_MIN_MARGIN:
+        return {**base, "verdict": VERDICT_HUMAN, "face_type": "human", "label": result.display, "confidence": human}
 
-        synthetic_score = max(
-            (
-                item["confidence"]
-                for item in all_predictions
-                if any(k in item["label"].lower() for k in SYNTHETIC_KEYWORDS)
-            ),
-            default=0.0,
-        )
-
-        if KEYWORD_REAL_PHOTO in normalized and photo_score >= settings.PHOTO_SCORE_THRESHOLD:
-            status = "PHOTO_LIKE"
-            reason = "The highest-scoring category is a real human photograph."
-        elif "object with no person" in normalized:
-            status = "NON_PHOTO"
-            reason = "The image was classified as an object or scene without a person."
-        elif any(term in normalized for term in SYNTHETIC_KEYWORDS):
-            status = "NON_PHOTO"
-            reason = "The highest-scoring category is an illustrated, diagrammatic, or computer-generated image."
+    if human < settings.NONHUMAN_MAX_HUMAN_PROB:
+        if result.name == "not_face":
+            if result.probability >= settings.NOT_FACE_MIN_PROB:
+                return {
+                    **base,
+                    "verdict": VERDICT_NOT_FACE,
+                    "face_type": result.face_type,
+                    "label": result.display,
+                    "confidence": result.probability,
+                }
         else:
-            status = "NEEDS_REVIEW"
-            reason = "The image type could not be determined confidently."
+            return {
+                **base,
+                "verdict": VERDICT_NON_HUMAN,
+                "face_type": result.face_type,
+                "label": result.display,
+                "confidence": result.probability,
+            }
 
-        display_label = friendly_image_type(top_label)
+    return {
+        **base,
+        "verdict": VERDICT_UNSURE,
+        "face_type": "unsure",
+        "label": f"Unsure (closest: {result.display})",
+        "confidence": result.probability,
+    }
 
-        return {
-            "status": status,
-            "top_class": top_label,
-            "top_class_confidence": top["confidence"],
-            "photo_score": round(photo_score, 4),
-            "cartoon_score": round(synthetic_score, 4),
-            "display_label": display_label,
-            "model_executed": "OpenAI CLIP ViT-B/32",
-            "all_predictions": all_predictions,
-            "scores": {item["label"]: item["confidence"] for item in all_predictions},
-            "reason": reason,
-        }
 
-    except Exception:
-        logger.exception("Image classification failed")
-        return {
-            "status": "UNCERTAIN",
-            "top_class": "Uncertain",
-            "top_class_confidence": 0.0,
-            "photo_score": 0.0,
-            "cartoon_score": 0.0,
-            "display_label": "Uncertain",
-            "model_executed": MODEL_NAME_HEURISTIC_SCREENER,
-            "all_predictions": [],
-            "scores": {},
-            "reason": "Image classification failed due to an internal error.",
-        }
+def classify_boxes(image_bgr: np.ndarray, boxes: list[list[int]]) -> list[dict[str, Any]]:
+    """Verify what each box contains (real human, animal, cartoon, ...). One verdict per box, in order."""
+    if not boxes:
+        return []
+
+    crops, index = [], []
+    for i, box in enumerate(boxes):
+        crop = crop_square(image_bgr, box, settings.FACE_CROP_MARGIN)
+        if crop is not None and crop.size:
+            crops.append(crop)
+            index.append(i)
+
+    unavailable = {
+        "verdict": VERDICT_UNAVAILABLE,
+        "face_type": "unsure",
+        "label": "Unsure (verification model unavailable)",
+        "confidence": None,
+        "margin": None,
+        "scores": {},
+    }
+    verdicts = [dict(unavailable) for _ in boxes]
+    results = semantic_service.classify_images(crops, "face") if crops else None
+    if results:
+        for i, result in zip(index, results, strict=True):
+            verdicts[i] = _verdict_from_probabilities(result)
+    return verdicts
+
+
+# --------------------------------------------------------------------------------------
+# Non-human entity localisation (animals/birds via YOLOX, anime faces via DeepGHS)
+# --------------------------------------------------------------------------------------
+
+
+def _letterbox(image_bgr: np.ndarray, to_rgb: bool) -> tuple[np.ndarray, float]:
+    """Resize keeping aspect ratio into a top-left aligned DETECTOR_INPUT square padded with grey."""
+    height, width = image_bgr.shape[:2]
+    ratio = min(DETECTOR_INPUT / height, DETECTOR_INPUT / width)
+    new_w, new_h = max(1, int(width * ratio)), max(1, int(height * ratio))
+    canvas = np.full((DETECTOR_INPUT, DETECTOR_INPUT, 3), LETTERBOX_PAD, dtype=np.uint8)
+    canvas[:new_h, :new_w] = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    if to_rgb:
+        canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+    return canvas, ratio
+
+
+@lru_cache(maxsize=1)
+def _yolox_grid() -> tuple[np.ndarray, np.ndarray]:
+    grids, strides = [], []
+    for stride in (8, 16, 32):
+        n = DETECTOR_INPUT // stride
+        xv, yv = np.meshgrid(np.arange(n), np.arange(n))
+        grids.append(np.stack((xv, yv), axis=2).reshape(-1, 2))
+        strides.append(np.full((n * n, 1), stride))
+    return np.concatenate(grids).astype(np.float32), np.concatenate(strides).astype(np.float32)
+
+
+def _nms(boxes_xywh: list[list[float]], scores: list[float], score_threshold: float) -> list[int]:
+    if not boxes_xywh:
+        return []
+    kept = cv2.dnn.NMSBoxes(boxes_xywh, scores, score_threshold, 0.45)
+    return [int(i) for i in np.asarray(kept).flatten()] if len(kept) else []
+
+
+def _to_entities(
+    boxes_xyxy: np.ndarray,
+    scores: np.ndarray,
+    labels: list[tuple[str, str]],
+    threshold: float,
+    source: str,
+    width: int,
+    height: int,
+) -> list[dict[str, Any]]:
+    boxes_xywh = [[float(b[0]), float(b[1]), float(b[2] - b[0]), float(b[3] - b[1])] for b in boxes_xyxy]
+    entities = []
+    for i in _nms(boxes_xywh, [float(s) for s in scores], threshold):
+        x1, y1, x2, y2 = clamp_box([int(round(v)) for v in boxes_xyxy[i]], width, height)
+        if x2 <= x1 or y2 <= y1:
+            continue
+        face_type, label = labels[i]
+        entities.append(
+            {
+                "face_type": face_type,
+                "label": label,
+                "confidence": round(float(scores[i]), 3),
+                "box_xyxy": [x1, y1, x2, y2],
+                "source": source,
+            }
+        )
+    return entities
+
+
+def _decode_yolox(output: np.ndarray, ratio: float, width: int, height: int, threshold: float) -> list[dict[str, Any]]:
+    """Decode raw YOLOX output [1, 8400, 85] (grid/stride decoding, objectness x class score)."""
+    if output.ndim != 3 or output.shape[2] < 6:
+        return []
+    preds = output[0]
+    grid, stride = _yolox_grid()
+    if preds.shape[0] != grid.shape[0]:
+        return []
+
+    centers = (preds[:, :2] + grid) * stride
+    sizes = np.exp(np.clip(preds[:, 2:4], -10, 10)) * stride
+    animal_ids = np.array(sorted(COCO_ANIMAL_CLASSES))
+    class_scores = preds[:, 4:5] * preds[:, 5:][:, animal_ids]
+    best = class_scores.argmax(axis=1)
+    best_score = class_scores.max(axis=1)
+    keep = best_score >= threshold
+    if not np.any(keep):
+        return []
+
+    boxes = np.concatenate([centers - sizes / 2.0, centers + sizes / 2.0], axis=1)[keep] / ratio
+    labels = [COCO_ANIMAL_CLASSES[int(animal_ids[b])] for b in best[keep]]
+    return _to_entities(boxes, best_score[keep], labels, threshold, MODEL_NAME_YOLOX, width, height)
+
+
+def _decode_anime(output: np.ndarray, ratio: float, width: int, height: int, threshold: float) -> list[dict[str, Any]]:
+    """Decode the single-class Ultralytics-style anime face output [1, 5, 8400]."""
+    if output.ndim != 3 or output.shape[1] < 5:
+        return []
+    feats = output[0].T
+    keep = feats[:, 4] >= threshold
+    if not np.any(keep):
+        return []
+    rows = feats[keep]
+    boxes = np.stack(
+        [
+            rows[:, 0] - rows[:, 2] / 2.0,
+            rows[:, 1] - rows[:, 3] / 2.0,
+            rows[:, 0] + rows[:, 2] / 2.0,
+            rows[:, 1] + rows[:, 3] / 2.0,
+        ],
+        axis=1,
+    )
+    boxes = boxes / ratio
+    labels = [("anime", "Anime / Cartoon Character")] * len(rows)
+    return _to_entities(boxes, rows[:, 4], labels, threshold, MODEL_NAME_ANIME_FACE, width, height)
+
+
+def detect_non_human_entities(image_bgr: np.ndarray) -> tuple[list[dict[str, Any]], list[str]]:
+    """
+    Locate animals/birds (YOLOX) and anime faces (DeepGHS).
+
+    Returns the candidate entities and the names of the models that really ran without error.
+    """
+    if image_bgr is None or image_bgr.size == 0:
+        return [], []
+
+    height, width = image_bgr.shape[:2]
+    entities: list[dict[str, Any]] = []
+    executed: list[str] = []
+
+    yolox = get_session("yolox")
+    if yolox is not None:
+        try:
+            canvas, ratio = _letterbox(image_bgr, to_rgb=False)
+            blob = canvas.astype(np.float32).transpose(2, 0, 1)[np.newaxis]
+            output = yolox.run(None, {yolox.get_inputs()[0].name: blob})[0]
+            entities.extend(_decode_yolox(output, ratio, width, height, settings.ANIMAL_CONF_THRESHOLD))
+            executed.append(MODEL_NAME_YOLOX)
+        except Exception:
+            logger.exception("Animal detection failed")
+
+    anime = get_session("anime_face")
+    if anime is not None:
+        try:
+            canvas, ratio = _letterbox(image_bgr, to_rgb=True)
+            blob = (canvas.astype(np.float32) / 255.0).transpose(2, 0, 1)[np.newaxis]
+            output = anime.run(None, {anime.get_inputs()[0].name: blob})[0]
+            entities.extend(_decode_anime(output, ratio, width, height, settings.ANIME_FACE_CONF_THRESHOLD))
+            executed.append(MODEL_NAME_ANIME_FACE)
+        except Exception:
+            logger.exception("Anime face detection failed")
+
+    return entities, executed

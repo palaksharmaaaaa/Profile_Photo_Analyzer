@@ -6,12 +6,13 @@ import numpy as np
 from app.core.config import settings
 from app.services.image_utils import clamp_box
 
+INFO_ANALYSIS_MAX_SIDE = 512
+SHARPNESS_REFERENCE_SIZE = 112
+DEMOGRAPHICS_MAX_YAW_RATIO = 0.60
+
 
 def check_image_information(image_bgr: np.ndarray) -> dict[str, Any]:
-    """
-    Check if the image contains any real visual information vs blank,
-    solid color, or uniform tone with zero entropy/structure.
-    """
+    """Decide whether the image carries visual information or is blank / a solid or uniform fill."""
     if image_bgr is None or image_bgr.size == 0:
         return {
             "has_information": False,
@@ -22,33 +23,31 @@ def check_image_information(image_bgr: np.ndarray) -> dict[str, Any]:
         }
 
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    longest = max(gray.shape[:2])
+    if longest > INFO_ANALYSIS_MAX_SIDE:
+        scale = INFO_ANALYSIS_MAX_SIDE / longest
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
     std_val = float(np.std(gray))
-
-    # Shannon Entropy calculation
-    hist, _ = np.histogram(gray, bins=256, range=(0, 256), density=True)
-    hist = hist[hist > 0]
-    entropy = float(-np.sum(hist * np.log2(hist))) if len(hist) > 0 else 0.0
-
-    # Edge / Laplacian variance
+    counts = np.bincount(gray.ravel(), minlength=256).astype(np.float64)
+    probs = counts[counts > 0] / counts.sum()
+    entropy = float(-np.sum(probs * np.log2(probs))) if len(probs) else 0.0
     lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    unique_vals = len(np.unique(gray))
+    unique_vals = int(np.count_nonzero(counts))
 
-    is_solid = (
+    is_blank = (
         std_val < settings.MIN_IMAGE_STD_DEV
         or entropy < settings.MIN_IMAGE_ENTROPY
         or lap_var < settings.MIN_LAPLACIAN_VAR
         or unique_vals < 5
     )
-
-    if is_solid:
-        reason = (
-            "This image contains no visual information to check or process (it is blank, solid color, or uniform fill)."
-        )
-    else:
-        reason = "Image contains valid visual entropy and information."
-
+    reason = (
+        "This image contains no visual information to check or process (it is blank, solid color, or uniform fill)."
+        if is_blank
+        else "Image contains valid visual entropy and information."
+    )
     return {
-        "has_information": not is_solid,
+        "has_information": not is_blank,
         "entropy": round(entropy, 3),
         "std_dev": round(std_val, 3),
         "laplacian_var": round(lap_var, 3),
@@ -57,21 +56,17 @@ def check_image_information(image_bgr: np.ndarray) -> dict[str, Any]:
 
 
 def _check_edge_touch(x1: int, y1: int, x2: int, y2: int, width: int, height: int) -> bool:
-    """Check if bounding box contacts image boundaries."""
     margin_x = max(settings.MIN_EDGE_MARGIN_PIXELS, int(width * settings.EDGE_MARGIN_RATIO))
     margin_y = max(settings.MIN_EDGE_MARGIN_PIXELS, int(height * settings.EDGE_MARGIN_RATIO))
     return x1 <= margin_x or y1 <= margin_y or x2 >= width - margin_x or y2 >= height - margin_y
 
 
 def _check_landmarks(landmarks: np.ndarray | None, width: int, height: int) -> tuple[bool, bool]:
-    """Verify facial keypoints presence and boundaries."""
     if landmarks is None:
         return False, False
-
     points = np.asarray(landmarks)
     if points.ndim != 2 or points.shape[1] < 2:
         return True, False
-
     inside = bool(
         np.all(points[:, 0] >= 0)
         and np.all(points[:, 0] < width)
@@ -81,6 +76,24 @@ def _check_landmarks(landmarks: np.ndarray | None, width: int, height: int) -> t
     return True, inside
 
 
+def estimate_yaw_ratio(landmarks: np.ndarray | None) -> float | None:
+    """
+    Head-turn proxy from the 5 YuNet landmarks (eye, eye, nose, mouth, mouth).
+
+    The nose tip's horizontal offset from the eye midpoint, relative to the inter-ocular distance:
+    about 0 for a frontal face and growing in magnitude as the head turns.
+    """
+    if landmarks is None:
+        return None
+    points = np.asarray(landmarks, dtype=np.float64)
+    if points.ndim != 2 or points.shape[0] < 3 or points.shape[1] < 2:
+        return None
+    eye_distance = abs(points[1, 0] - points[0, 0])
+    if eye_distance < 1e-6:
+        return None
+    return float((points[2, 0] - (points[0, 0] + points[1, 0]) / 2.0) / eye_distance)
+
+
 def _resolve_quality_verdict(
     touches_edge: bool,
     brightness: float,
@@ -88,19 +101,19 @@ def _resolve_quality_verdict(
     sharpness: float,
     landmarks_available: bool,
     landmarks_inside: bool,
+    yaw_ratio: float | None,
 ) -> tuple[str, str]:
-    """Determine status and reasoning based on prioritized quality metrics."""
+    """Determine status and reasoning based on prioritised quality metrics."""
     if touches_edge:
         return "PARTIAL_OR_CROPPED", "The face box is too close to an image edge."
     if brightness < settings.MIN_BRIGHTNESS:
-        return (
-            "UNCERTAIN",
-            "The face appears significantly underexposed or in poor lighting.",
-        )
+        return "UNCERTAIN", "The face appears significantly underexposed or in poor lighting."
     if brightness > settings.MAX_BRIGHTNESS:
         return "UNCERTAIN", "The face appears overexposed or washed out."
     if face_area_ratio < settings.MIN_FACE_AREA_RATIO:
         return "UNCERTAIN", "The face is too small in the frame for a profile photo."
+    if face_area_ratio > settings.MAX_FACE_AREA_RATIO:
+        return "UNCERTAIN", "The face fills almost the whole frame; the head may be cropped."
     if sharpness < settings.MIN_SHARPNESS_SCORE:
         return (
             "UNCERTAIN",
@@ -108,22 +121,16 @@ def _resolve_quality_verdict(
         )
     if not landmarks_available or not landmarks_inside:
         return "UNCERTAIN", "Facial landmarks could not be verified reliably."
-    return (
-        "LIKELY_COMPLETE",
-        "The face is well-framed, sharp, and all key facial landmarks are visible.",
-    )
+    if yaw_ratio is not None and abs(yaw_ratio) > settings.MAX_YAW_RATIO:
+        return "UNCERTAIN", "The head is turned away from the camera; a frontal photo is expected."
+    return "LIKELY_COMPLETE", "The face is well-framed, sharp, frontal, and all key facial landmarks are visible."
 
 
 def assess_face_quality(image_bgr: np.ndarray, face_box: list, landmarks: np.ndarray | None = None) -> dict[str, Any]:
-    """
-    Evaluate face visibility, sharpness, exposure, framing, and landmarks.
-    """
+    """Evaluate framing, exposure, sharpness (resolution-normalised), pose and landmarks for one face."""
     height, width = image_bgr.shape[:2]
-    total_area = width * height
-
     x1, y1, x2, y2 = clamp_box(face_box, width, height)
-    box_width = max(0, x2 - x1)
-    box_height = max(0, y2 - y1)
+    box_width, box_height = max(0, x2 - x1), max(0, y2 - y1)
 
     if box_width == 0 or box_height == 0:
         return {
@@ -135,28 +142,35 @@ def assess_face_quality(image_bgr: np.ndarray, face_box: list, landmarks: np.nda
             "landmarks_inside_image": False,
             "brightness_score": 0.0,
             "face_area_ratio": 0.0,
+            "yaw_ratio": None,
+            "face_min_side_px": 0,
+            "demographics_usable": False,
+            "demographics_caveat": "Invalid face bounding box.",
         }
 
     touches_edge = _check_edge_touch(x1, y1, x2, y2, width, height)
-
-    face_crop = image_bgr[y1:y2, x1:x2]
-    gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
-    sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    gray = cv2.cvtColor(image_bgr[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
     brightness = float(np.mean(gray))
-
-    face_area = box_width * box_height
-    face_area_ratio = float(face_area / total_area) if total_area > 0 else 0.0
-
+    reference = cv2.resize(
+        gray,
+        (SHARPNESS_REFERENCE_SIZE, SHARPNESS_REFERENCE_SIZE),
+        interpolation=cv2.INTER_AREA if max(gray.shape) > SHARPNESS_REFERENCE_SIZE else cv2.INTER_LINEAR,
+    )
+    sharpness = float(cv2.Laplacian(reference, cv2.CV_64F).var())
+    face_area_ratio = float(box_width * box_height / (width * height))
     landmarks_available, landmarks_inside = _check_landmarks(landmarks, width, height)
+    yaw_ratio = estimate_yaw_ratio(landmarks)
+    min_side = min(box_width, box_height)
 
     status, reason = _resolve_quality_verdict(
-        touches_edge,
-        brightness,
-        face_area_ratio,
-        sharpness,
-        landmarks_available,
-        landmarks_inside,
+        touches_edge, brightness, face_area_ratio, sharpness, landmarks_available, landmarks_inside, yaw_ratio
     )
+
+    caveat = None
+    if min_side < settings.MIN_FACE_SIDE_PX:
+        caveat = f"The face is only {min_side}px wide; at least {settings.MIN_FACE_SIDE_PX}px is needed."
+    elif yaw_ratio is not None and abs(yaw_ratio) > DEMOGRAPHICS_MAX_YAW_RATIO:
+        caveat = "The head is turned too far from the camera for reliable age or gender estimation."
 
     return {
         "status": status,
@@ -167,4 +181,8 @@ def assess_face_quality(image_bgr: np.ndarray, face_box: list, landmarks: np.nda
         "landmarks_inside_image": landmarks_inside,
         "brightness_score": round(brightness, 2),
         "face_area_ratio": round(face_area_ratio, 4),
+        "yaw_ratio": None if yaw_ratio is None else round(yaw_ratio, 3),
+        "face_min_side_px": min_side,
+        "demographics_usable": caveat is None,
+        "demographics_caveat": caveat,
     }

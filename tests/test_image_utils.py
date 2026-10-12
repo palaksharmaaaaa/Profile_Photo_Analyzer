@@ -1,104 +1,194 @@
 import io
-from unittest.mock import patch
 
+import cv2
 import numpy as np
 import pytest
 from PIL import Image
 
+from app.core.config import settings
 from app.services.image_utils import (
-    annotate_faces,
+    InvalidImageError,
+    annotate_boxes,
     bgr_to_base64_jpeg,
+    box_center_inside,
+    box_iou,
     clamp_box,
     compute_normalized_box,
+    crop_square,
     decode_image_bytes,
     pil_to_bgr,
     sniff_image_magic_bytes,
 )
 
 
-def test_decode_image_bytes_valid():
-    img = Image.new("RGB", (50, 50), color=(100, 150, 200))
+def encode(image: Image.Image, fmt: str, **kwargs) -> bytes:
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    decoded = decode_image_bytes(buf.getvalue())
-    assert isinstance(decoded, Image.Image)
-    assert decoded.size == (50, 50)
+    image.save(buf, format=fmt, **kwargs)
+    return buf.getvalue()
 
 
-def test_decode_image_bytes_invalid():
-    with pytest.raises(ValueError, match="Invalid or unsupported"):
-        decode_image_bytes(b"not an image byte sequence")
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (b"\xff\xd8\xff\xe0abc", "image/jpeg"),
+        (b"\x89PNG\r\n\x1a\nxxxx", "image/png"),
+        (b"RIFF\x00\x00\x00\x00WEBPVP8 ", "image/webp"),
+        (b"GIF89a....", "image/gif"),
+        (b"GIF87a....", "image/gif"),
+        (b"II*\x00....", "image/tiff"),
+        (b"MM\x00*....", "image/tiff"),
+        (b"BM......", "image/bmp"),
+    ],
+)
+def test_sniff_recognises_real_formats(payload, expected):
+    assert sniff_image_magic_bytes(payload) == expected
 
 
-def test_decode_image_bytes_corrupted_payload():
-    corrupted = b"\xff\xd8\xff\xe0" + b"\x00" * 30
-    with pytest.raises(ValueError, match="Invalid or corrupted"):
-        decode_image_bytes(corrupted)
+@pytest.mark.parametrize("payload", [b"", b"abc", b"NOT_AN_IMAGE_AT_ALL"])
+def test_sniff_rejects_unknown_or_short(payload):
+    with pytest.raises(ValueError):
+        sniff_image_magic_bytes(payload)
 
 
-def test_sniff_image_magic_bytes_formats():
-    assert sniff_image_magic_bytes(b"\xff\xd8\xff\xe0\x00") == "image/jpeg"
-    assert sniff_image_magic_bytes(b"\x89PNG\r\n\x1a\n\x00\x00") == "image/png"
-    assert sniff_image_magic_bytes(b"RIFF\x00\x00\x00\x00WEBP\x00") == "image/webp"
-    assert sniff_image_magic_bytes(b"BM\x00\x00\x00") == "image/bmp"
-
-    with pytest.raises(ValueError, match="empty or too short"):
-        sniff_image_magic_bytes(b"")
-
-    with pytest.raises(ValueError, match="empty or too short"):
-        sniff_image_magic_bytes(b"ab")
-
-    with pytest.raises(ValueError, match="Invalid or unsupported"):
-        sniff_image_magic_bytes(b"FAKE_IMAGE_HEADER_123")
+def test_decode_plain_jpeg():
+    decoded = decode_image_bytes(encode(Image.new("RGB", (64, 48), "red"), "JPEG"))
+    assert decoded.image.size == (64, 48)
+    assert decoded.image.mode == "RGB"
+    assert decoded.format_detected == "image/jpeg"
+    assert (decoded.original_width, decoded.original_height) == (64, 48)
+    assert decoded.exif_orientation_applied is False
+    assert decoded.downscaled is False
 
 
-def test_compute_normalized_box():
-    # Zero/negative bounds
-    assert compute_normalized_box([10, 10, 50, 50], 0, 100) == [0.0, 0.0, 0.0, 0.0]
-    assert compute_normalized_box([10, 10, 50, 50], 100, 0) == [0.0, 0.0, 0.0, 0.0]
-
-    # Standard clamping and conversion: box is [x1, y1, x2, y2] = [20, 10, 50, 60] on 100x200 (width=100, height=200)
-    # ymin% = (10/200)*100 = 5.0%, xmin% = (20/100)*100 = 20.0%, ymax% = (60/200)*100 = 30.0%, xmax% = (50/100)*100 = 50.0%
-    norm = compute_normalized_box([20, 10, 50, 60], 100, 200)
-    assert norm == [5.0, 20.0, 30.0, 50.0]
+def test_decode_applies_exif_orientation():
+    exif = Image.Exif()
+    exif[0x0112] = 6  # stored sideways, display rotated 90 degrees
+    decoded = decode_image_bytes(encode(Image.new("RGB", (40, 20), "blue"), "JPEG", exif=exif))
+    assert decoded.image.size == (20, 40)
+    assert decoded.exif_orientation_applied is True
+    assert (decoded.original_width, decoded.original_height) == (40, 20)
 
 
-def test_pil_to_bgr():
-    img = Image.new("RGB", (20, 20), color=(255, 0, 0))
-    bgr = pil_to_bgr(img)
-    assert isinstance(bgr, np.ndarray)
-    assert bgr.shape == (20, 20, 3)
-    # Red in RGB is Blue in BGR (0, 0, 255)
-    assert bgr[0, 0, 0] == 0
-    assert bgr[0, 0, 2] == 255
+def test_decode_flattens_transparency_onto_white():
+    decoded = decode_image_bytes(encode(Image.new("RGBA", (10, 10), (0, 0, 0, 0)), "PNG"))
+    assert np.array(decoded.image).min() == 255
 
 
-def test_bgr_to_base64_jpeg():
-    arr = np.zeros((30, 30, 3), dtype=np.uint8)
-    encoded = bgr_to_base64_jpeg(arr)
-    assert encoded.startswith("data:image/jpeg;base64,")
+def test_decode_palette_transparency():
+    palette = Image.new("P", (8, 8), 0)
+    palette.putpalette([0, 0, 0] * 256)
+    palette.info["transparency"] = 0
+    decoded = decode_image_bytes(encode(palette, "PNG", transparency=0))
+    assert decoded.image.mode == "RGB"
+    assert np.array(decoded.image).min() == 255
 
 
-def test_bgr_to_base64_jpeg_failure():
-    arr = np.zeros((30, 30, 3), dtype=np.uint8)
-    with patch("cv2.imencode", return_value=(False, None)):
-        with pytest.raises(ValueError, match="Could not encode"):
-            bgr_to_base64_jpeg(arr)
+def test_decode_animated_gif_uses_first_frame():
+    frames = [Image.new("RGB", (16, 16), "red"), Image.new("RGB", (16, 16), "green")]
+    payload = encode(frames[0], "GIF", save_all=True, append_images=frames[1:])
+    decoded = decode_image_bytes(payload)
+    assert decoded.format_detected == "image/gif"
+    assert decoded.image.size == (16, 16)
+
+
+def test_decode_downscales_to_working_size(monkeypatch):
+    monkeypatch.setattr(settings, "WORKING_MAX_SIDE", 100)
+    decoded = decode_image_bytes(encode(Image.new("RGB", (300, 200), "grey"), "PNG"))
+    assert max(decoded.image.size) == 100
+    assert decoded.downscaled is True
+    assert (decoded.original_width, decoded.original_height) == (300, 200)
+
+
+def test_decode_uses_jpeg_draft_for_big_jpegs(monkeypatch):
+    monkeypatch.setattr(settings, "WORKING_MAX_SIDE", 64)
+    decoded = decode_image_bytes(encode(Image.new("RGB", (1024, 768), "grey"), "JPEG"))
+    assert max(decoded.image.size) == 64
+    assert (decoded.original_width, decoded.original_height) == (1024, 768)
+
+
+def test_decode_rejects_oversized_dimension(monkeypatch):
+    monkeypatch.setattr(settings, "MAX_IMAGE_DIMENSION", 50)
+    with pytest.raises(InvalidImageError, match="dimension"):
+        decode_image_bytes(encode(Image.new("RGB", (60, 10), "grey"), "PNG"))
+
+
+@pytest.mark.parametrize("pixels", [1500, 50_000])
+def test_decode_rejects_decompression_bomb(monkeypatch, pixels):
+    monkeypatch.setattr(settings, "MAX_IMAGE_PIXELS", 1000)
+    side = int(pixels**0.5)
+    with pytest.raises(InvalidImageError, match="decompression"):
+        decode_image_bytes(encode(Image.new("RGB", (side, side), "grey"), "PNG"))
+
+
+def test_decode_rejects_unknown_format():
+    with pytest.raises(InvalidImageError, match="unsupported binary format"):
+        decode_image_bytes(b"this is not an image")
+
+
+def test_decode_rejects_corrupt_data_with_valid_header():
+    with pytest.raises(InvalidImageError, match="not a valid supported image"):
+        decode_image_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 40)
+
+
+def test_pil_to_bgr_swaps_channels():
+    bgr = pil_to_bgr(Image.new("RGB", (2, 2), (255, 0, 0)))
+    assert tuple(bgr[0, 0]) == (0, 0, 255)
+
+
+def test_bgr_to_base64_jpeg_roundtrip():
+    url = bgr_to_base64_jpeg(np.zeros((8, 8, 3), dtype=np.uint8))
+    assert url.startswith("data:image/jpeg;base64,")
+
+
+def test_bgr_to_base64_jpeg_encode_failure(monkeypatch):
+    monkeypatch.setattr(cv2, "imencode", lambda *a, **k: (False, None))
+    with pytest.raises(ValueError, match="Could not encode"):
+        bgr_to_base64_jpeg(np.zeros((8, 8, 3), dtype=np.uint8))
 
 
 def test_clamp_box():
-    # Box exceeds image boundaries
-    box = [-10, -5, 600, 700]
-    x1, y1, x2, y2 = clamp_box(box, 500, 500)
-    assert x1 == 0
-    assert y1 == 0
-    assert x2 == 500
-    assert y2 == 500
+    assert clamp_box([-5, -5, 500, 500], 100, 80) == (0, 0, 100, 80)
+    assert clamp_box([150, 150, 160, 160], 100, 80) == (99, 79, 100, 80)
 
 
-def test_annotate_faces_inverted_box():
+def test_compute_normalized_box():
+    assert compute_normalized_box([10, 20, 50, 60], 100, 200) == [10.0, 10.0, 30.0, 50.0]
+    assert compute_normalized_box([0, 0, 1, 1], 0, 100) == [0.0, 0.0, 0.0, 0.0]
+
+
+def test_crop_square_is_square_and_expands_by_margin():
     image = np.zeros((200, 200, 3), dtype=np.uint8)
-    # Box with x2 <= x1 (inverted)
-    inverted_boxes = [[150, 50, 50, 150]]
-    result = annotate_faces(image, inverted_boxes, "TEST", (0, 255, 0))
-    assert isinstance(result, np.ndarray)
+    crop = crop_square(image, [80, 80, 120, 120], 0.5)
+    assert crop.shape[:2] == (80, 80)
+
+
+def test_crop_square_replicates_edges_instead_of_stretching():
+    image = np.full((100, 100, 3), 77, dtype=np.uint8)
+    crop = crop_square(image, [0, 0, 40, 40], 0.5)
+    assert crop.shape[:2] == (80, 80)
+    assert crop.min() == 77  # padding replicates image pixels, no black fill
+
+
+@pytest.mark.parametrize("box", [[10, 10, 10, 20], [50, 50, 40, 60], [-20, -20, -5, -5], [300, 300, 400, 400]])
+def test_crop_square_rejects_degenerate_boxes(box):
+    assert crop_square(np.zeros((100, 100, 3), dtype=np.uint8), box, 0.2) is None
+
+
+def test_crop_square_rejects_zero_size_after_rounding():
+    assert crop_square(np.zeros((100, 100, 3), dtype=np.uint8), [10, 10, 10.0001, 10.0001], -0.5) is None
+
+
+def test_annotate_boxes_draws_without_mutating_input():
+    image = np.zeros((120, 160, 3), dtype=np.uint8)
+    out = annotate_boxes(image, [([20, 20, 80, 80], "Label", (0, 255, 0)), ([5, 5, 5, 5], "skip", (0, 0, 255))])
+    assert image.max() == 0
+    assert out.max() > 0
+
+
+def test_box_iou_and_center():
+    assert box_iou([0, 0, 10, 10], [0, 0, 10, 10]) == 1.0
+    assert box_iou([0, 0, 10, 10], [20, 20, 30, 30]) == 0.0
+    assert 0 < box_iou([0, 0, 10, 10], [5, 5, 15, 15]) < 1
+    assert box_iou([0, 0, 0, 0], [0, 0, 0, 0]) == 0.0
+    assert box_center_inside([40, 40, 60, 60], [0, 0, 100, 100]) is True
+    assert box_center_inside([200, 200, 220, 220], [0, 0, 100, 100]) is False

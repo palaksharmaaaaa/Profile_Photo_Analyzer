@@ -14,5 +14,6 @@ addopts = "--cov --cov-config=.coveragerc --cov-report=term-missing --cov-report
 testpaths = ["tests"]
 filterwarnings = [
     "ignore:.*Using .* with .*starlette.testclient.*",
+    "ignore:.*found in sys.modules after import of package.*:RuntimeWarning",
 ]
 

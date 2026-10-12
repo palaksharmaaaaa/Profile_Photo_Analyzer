@@ -1,12 +1,9 @@
 [run]
 branch = True
-source =
-    app
-    .
+source = app
 omit =
     tests/*
     .venv/*
-    setup.py
 
 [report]
 show_missing = True

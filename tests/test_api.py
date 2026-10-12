@@ -1,360 +1,245 @@
 import io
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from app import app
+from app.core.config import Settings, settings
+from app.main import ProductionSecurityMiddleware
 from app.schemas.analysis import AnalysisResponse
-from tests.conftest import MockFace
+from tests.test_analyzer import HUMAN, PHOTO, adult, det
 
 client = TestClient(app)
 
 
-def test_home_endpoint():
+def jpeg_bytes(size=(64, 64), color="grey") -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+def canned_result() -> dict:
+    return {"accepted": True, "posting_status": "INITIAL_CHECKS_PASSED"}
+
+
+@pytest.fixture
+def stub_analysis():
+    with patch("app.api.routes.analyze_profile_photo_image", side_effect=lambda *a, **k: canned_result()) as stub:
+        yield stub
+
+
+def post(name="p.jpg", data=None, headers=None, ctype="image/jpeg"):
+    return client.post(
+        "/analyze-profile-photo",
+        headers=headers or {},
+        files={"file": (name, jpeg_bytes() if data is None else data, ctype)},
+    )
+
+
+def test_home_and_missing_template():
     response = client.get("/")
     assert response.status_code == 200
     assert "Profile Photo Analyzer" in response.text
-
-
-def test_health_endpoint():
-    response = client.get("/health")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] in ("ready", "degraded")
-    assert "version" in data
-    assert "models" in data
-
-
-def test_health_endpoint_degraded():
-    with patch(
-        "app.api.routes.check_models_status",
-        return_value={"yunet": {"ready": False, "size_bytes": 0}},
-    ):
-        response = client.get("/health")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "degraded"
-
-
-def test_analyze_endpoint_valid_image(test_image_bytes):
-    faces = [MockFace(bbox=[150, 150, 350, 350], age=25.0)]
-    mock_type = {
-        "status": "PHOTO_LIKE",
-        "top_class": "a real photograph of a real human person",
-        "top_class_confidence": 0.95,
-        "photo_score": 0.95,
-        "cartoon_score": 0.05,
-        "display_label": "Real Photo",
-        "reason": "Highest scoring category is real photo.",
-        "model_executed": "OpenAI CLIP ViT-B/32",
-    }
-    with (
-        patch("app.services.analyzer.classify_image_type", return_value=mock_type),
-        patch("app.services.analyzer.detect_faces", return_value=faces),
-    ):
-        response = client.post(
-            "/analyze-profile-photo",
-            files={"file": ("profile.jpg", test_image_bytes, "image/jpeg")},
-        )
-        assert response.status_code == 200
-        data = response.json()
-        validated = AnalysisResponse(**data)
-        assert validated.face_detected is True
-        assert validated.face_count == 1
-        assert validated.original_image is not None
-        assert validated.annotated_image is not None
-
-
-def test_analyze_endpoint_invalid_extension():
-    response = client.post(
-        "/analyze-profile-photo",
-        files={"file": ("malicious.exe", b"binarycontent", "application/octet-stream")},
-    )
-    assert response.status_code == 400
-    data = response.json()
-    assert data["accepted"] is False
-    assert "Only" in data["reason"]
-
-
-def test_analyze_endpoint_empty_file():
-    response = client.post("/analyze-profile-photo", files={"file": ("empty.jpg", b"", "image/jpeg")})
-    assert response.status_code == 400
-    data = response.json()
-    assert data["accepted"] is False
-    assert "empty" in data["reason"].lower()
-
-
-def test_analyze_endpoint_corrupted_image():
-    response = client.post(
-        "/analyze-profile-photo",
-        files={"file": ("corrupt.jpg", b"NOT_AN_IMAGE_DATA_HEADER", "image/jpeg")},
-    )
-    assert response.status_code == 400
-    data = response.json()
-    assert data["accepted"] is False
-    assert "invalid or unsupported binary format" in data["reason"].lower()
-
-
-def test_analyze_endpoint_corrupt_data_valid_header():
-    corrupted_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 40
-    response = client.post(
-        "/analyze-profile-photo",
-        files={"file": ("corrupt.jpg", corrupted_jpeg, "image/jpeg")},
-    )
-    assert response.status_code == 400
-    data = response.json()
-    assert data["accepted"] is False
-    assert "not a valid supported image" in data["reason"].lower()
-
-
-def test_analyze_endpoint_file_too_large():
-    from app.core.config import settings
-
-    # 9 MB dummy payload
-    oversized = b"0" * (settings.MAX_UPLOAD_BYTES + 10)
-    response = client.post("/analyze-profile-photo", files={"file": ("huge.jpg", oversized, "image/jpeg")})
-    assert response.status_code == 413
-    data = response.json()
-    assert data["accepted"] is False
-    assert "maximum upload size" in data["reason"].lower()
-
-
-def test_analyze_endpoint_internal_error(test_image_bytes):
-    with patch(
-        "app.api.routes.analyze_profile_photo_image",
-        side_effect=RuntimeError("Unexpected crash"),
-    ):
-        response = client.post(
-            "/analyze-profile-photo",
-            files={"file": ("profile.jpg", test_image_bytes, "image/jpeg")},
-        )
-        assert response.status_code == 500
-        data = response.json()
-        assert data["accepted"] is False
-        assert "analysis failed" in data["reason"].lower()
-
-
-def test_home_template_not_found():
     with patch("pathlib.Path.is_file", return_value=False):
-        response = client.get("/")
-        assert response.status_code == 200
-        assert "Frontend template not found" in response.text
+        assert "Frontend template not found" in client.get("/").text
 
 
-def test_app_main_block():
-    with patch("uvicorn.run") as mock_uvicorn:
-        import runpy
+def test_health_reports_every_model_and_degrades_honestly():
+    data = client.get("/health").json()
+    assert data["status"] in ("ready", "degraded")
+    assert data["version"] == settings.APP_VERSION
+    assert {"yunet", "yolox", "anime_face", "siglip_vision", "age_gender", "label_bank"} <= set(data["models"])
+    with patch("app.api.routes.check_models_status", return_value={"yunet": {"ready": False, "size_bytes": 0}}):
+        assert client.get("/health").json()["status"] == "degraded"
+    with patch("app.api.routes.check_models_status", return_value={"yunet": {"ready": True, "size_bytes": 1}}):
+        assert client.get("/health").json()["status"] == "ready"
 
-        runpy.run_path("app.py", run_name="__main__")
-        mock_uvicorn.assert_called_once()
+
+def test_successful_analysis_passes_decoded_metadata(stub_analysis):
+    response = post()
+    assert response.status_code == 200
+    assert response.json()["posting_status"] == "INITIAL_CHECKS_PASSED"
+    kwargs = stub_analysis.call_args.kwargs
+    assert kwargs["filename"] == "p.jpg"
+    assert kwargs["format_detected"] == "image/jpeg"
+    assert kwargs["meta"].original_width == 64
 
 
-def test_analyze_endpoint_dimension_too_large():
-    img = Image.new("RGB", (5000, 100), color="white")
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG")
-    payload = buf.getvalue()
+def test_real_pipeline_output_satisfies_public_schema(test_image_bytes):
+    """Full route -> decode -> analyzer with only the model calls replaced."""
+    from app.services import analyzer as az
 
-    response = client.post("/analyze-profile-photo", files={"file": ("wide.jpg", payload, "image/jpeg")})
+    with (
+        patch.object(az, "detect_faces", return_value=([det([200, 200, 400, 400])], "YuNet test")),
+        patch.object(az, "detect_non_human_entities", return_value=([], [])),
+        patch.object(az, "classify_boxes", side_effect=lambda img, boxes: [HUMAN] * len(boxes)),
+        patch.object(az, "classify_image_type", return_value=PHOTO),
+        patch.object(az, "predict_face_demographics", return_value=adult()),
+    ):
+        response = post(data=test_image_bytes)
+    assert response.status_code == 200
+    validated = AnalysisResponse(**response.json())
+    assert validated.real_human_face_count == 1
+    assert validated.human_faces[0].gender == "Female"
+
+
+@pytest.mark.parametrize(
+    "name", ["a.jpg", "a.jpeg", "a.jfif", "a.png", "a.webp", "a.gif", "a.tif", "a.tiff", "a.bmp", "A.JPG"]
+)
+def test_all_documented_extensions_are_accepted(stub_analysis, name):
+    assert post(name=name).status_code == 200
+
+
+def test_rejects_unlisted_extension():
+    response = post(name="malicious.exe", data=b"binarycontent", ctype="application/octet-stream")
+    assert response.status_code == 400
+    assert response.json()["accepted"] is False
+    assert "Only" in response.json()["reason"]
+    assert post(name="noextension", data=b"x").status_code == 400
+
+
+def test_rejects_empty_oversized_and_non_image_payloads():
+    assert "empty" in post(data=b"").json()["reason"].lower()
+
+    too_big = post(data=b"0" * (settings.MAX_UPLOAD_BYTES + 10))
+    assert too_big.status_code == 413
+    assert "maximum upload size" in too_big.json()["reason"].lower()
+
+    fake = post(data=b"NOT_AN_IMAGE_DATA_HEADER")
+    assert fake.status_code == 400
+    assert "unsupported binary format" in fake.json()["reason"].lower()
+
+    corrupt = post(data=b"\xff\xd8\xff\xe0" + b"\x00" * 40)
+    assert corrupt.status_code == 400
+    assert "not a valid supported image" in corrupt.json()["reason"].lower()
+
+
+def test_rejects_oversized_dimensions(monkeypatch):
+    monkeypatch.setattr(settings, "MAX_IMAGE_DIMENSION", 50)
+    response = post(data=jpeg_bytes((100, 10)))
     assert response.status_code == 400
     assert "limit" in response.json()["reason"]
 
 
-def test_analyze_endpoint_pixel_count_too_large():
-    import warnings
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-        img = Image.new("RGB", (4000, 4001), color="white")
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG")
-        payload = buf.getvalue()
-
-    response = client.post("/analyze-profile-photo", files={"file": ("bomb.jpg", payload, "image/jpeg")})
-    assert response.status_code == 400
-    assert "pixel count" in response.json()["reason"]
+def test_internal_errors_do_not_leak_details(test_image_bytes):
+    with patch("app.api.routes.analyze_profile_photo_image", side_effect=RuntimeError("secret internals")):
+        response = post(data=test_image_bytes)
+    assert response.status_code == 500
+    assert "secret internals" not in response.text
+    assert "analysis failed" in response.json()["reason"].lower()
 
 
-def test_analyze_endpoint_decompression_bomb_error(test_image_bytes):
-    with patch(
-        "PIL.Image.open",
-        side_effect=Image.DecompressionBombError("Decompression bomb DOS attack"),
-    ):
-        response = client.post("/analyze-profile-photo", files={"file": ("bomb.jpg", test_image_bytes, "image/jpeg")})
-        assert response.status_code == 400
-        assert "decompression limit" in response.json()["reason"]
-
-
-def test_security_middleware_api_key_auth(test_image_bytes):
-    from app.core.config import settings
-
+def test_api_key_authentication(stub_analysis):
     with patch.object(settings, "API_KEY", "secret-test-token"):
-        # Without key -> 401
-        res_no_key = client.post("/analyze-profile-photo", files={"file": ("p.jpg", test_image_bytes, "image/jpeg")})
-        assert res_no_key.status_code == 401
-
-        # With Bearer header -> 200
-        res_auth = client.post(
-            "/analyze-profile-photo",
-            headers={"Authorization": "Bearer secret-test-token"},
-            files={"file": ("p.jpg", test_image_bytes, "image/jpeg")},
-        )
-        assert res_auth.status_code == 200
-
-        # With X-API-Key header -> 200
-        res_header = client.post(
-            "/analyze-profile-photo",
-            headers={"X-API-Key": "secret-test-token"},
-            files={"file": ("p.jpg", test_image_bytes, "image/jpeg")},
-        )
-        assert res_header.status_code == 200
-
-        # Wrong key -> 401
-        res_wrong = client.post(
-            "/analyze-profile-photo",
-            headers={"X-API-Key": "wrong-key"},
-            files={"file": ("p.jpg", test_image_bytes, "image/jpeg")},
-        )
-        assert res_wrong.status_code == 401
+        assert post().status_code == 401
+        assert post(headers={"Authorization": "Bearer secret-test-token"}).status_code == 200
+        assert post(headers={"X-API-Key": "secret-test-token"}).status_code == 200
+        assert post(headers={"X-API-Key": "wrong-key"}).status_code == 401
+        assert client.get("/health").status_code == 200  # exempt
 
 
-def test_security_middleware_rate_limiting():
+def test_rate_limiting(stub_analysis):
     import app.main as app_main
-    from app.core.config import settings
 
-    with (
-        patch.object(settings, "RATE_LIMIT_ENABLED", True),
-        patch.object(settings, "RATE_LIMIT_PER_MINUTE", 2),
-    ):
+    with patch.object(settings, "RATE_LIMIT_ENABLED", True), patch.object(settings, "RATE_LIMIT_PER_MINUTE", 2):
         with app_main._rate_limit_lock:
             app_main._request_records.clear()
-
-        # Request 1 & 2: pass
-        r1 = client.post("/analyze-profile-photo")
-        assert r1.status_code in (200, 400, 422)
-        r2 = client.post("/analyze-profile-photo")
-        assert r2.status_code in (200, 400, 422)
-
-        # Request 3: rate limited
-        r3 = client.post("/analyze-profile-photo")
-        assert r3.status_code == 429
-        assert "Rate limit exceeded" in r3.json()["detail"]
+        assert post().status_code == 200
+        assert post().status_code == 200
+        limited = post()
+        assert limited.status_code == 429
+        assert "Rate limit exceeded" in limited.json()["detail"]
+        assert limited.headers["Retry-After"] == "60"
 
 
-def test_security_middleware_concurrency_limit():
-    from app.core.config import settings
-
+def test_concurrency_limit(stub_analysis):
     with patch.object(settings, "MAX_CONCURRENT_REQUESTS", 0):
-        r_health = client.get("/health")
-        assert r_health.status_code == 200  # exempt
-
-        r_busy = client.post("/analyze-profile-photo")
-        assert r_busy.status_code == 503
-        assert "concurrency limit" in r_busy.json()["detail"]
+        assert client.get("/health").status_code == 200
+        busy = post()
+        assert busy.status_code == 503
+        assert "concurrency limit" in busy.json()["detail"]
 
 
-def test_settings_production_mode_validation():
-    import pytest
+def test_rate_limit_headers_present(stub_analysis):
+    import app.main as app_main
 
-    from app.core.config import Settings
+    with app_main._rate_limit_lock:
+        app_main._request_records.clear()
+    response = post()
+    assert response.headers["X-RateLimit-Limit"] == str(settings.RATE_LIMIT_PER_MINUTE)
 
-    # In production mode without API key -> raises ValueError
+
+def test_production_mode_requires_api_key():
     with pytest.raises(ValueError, match="Production mode .* requires PPA_API_KEY"):
         Settings(ENVIRONMENT="production", API_KEY=None, REQUIRE_API_KEY_IN_PRODUCTION=True)
-
-    # In production mode with API key -> succeeds and enforces REQUIRE_NEURAL_CLASSIFIER
-    s_prod = Settings(ENVIRONMENT="production", API_KEY="prod-secret-key", REQUIRE_API_KEY_IN_PRODUCTION=True)
-    assert s_prod.API_KEY == "prod-secret-key"
-    assert s_prod.REQUIRE_NEURAL_CLASSIFIER is True
-
-    # In development mode without API key -> succeeds and keeps REQUIRE_NEURAL_CLASSIFIER False
-    s_dev = Settings(ENVIRONMENT="development", API_KEY=None)
-    assert s_dev.ENVIRONMENT == "development"
-    assert s_dev.REQUIRE_NEURAL_CLASSIFIER is False
+    assert Settings(ENVIRONMENT="production", API_KEY="prod-secret-key").API_KEY == "prod-secret-key"
+    assert Settings(ENVIRONMENT="development", API_KEY=None).ENVIRONMENT == "development"
 
 
-def test_security_middleware_trusted_proxy_ip():
-    from unittest.mock import MagicMock
-
+def test_trusted_proxy_ip_resolution():
     from starlette.requests import Request
 
-    from app.core.config import settings
-    from app.main import ProductionSecurityMiddleware
+    def request(client_addr=("127.0.0.1", 1), forwarded=None):
+        headers = [(b"x-forwarded-for", forwarded)] if forwarded is not None else []
+        scope = {"type": "http", "headers": headers}
+        if client_addr:
+            scope["client"] = client_addr
+        return Request(scope)
 
-    # Mock request with trusted peer and X-Forwarded-For
-    scope = {
-        "type": "http",
-        "client": ("127.0.0.1", 12345),
-        "headers": [(b"x-forwarded-for", b"203.0.113.50, 10.0.0.1")],
-    }
-    req = Request(scope)
+    resolve = ProductionSecurityMiddleware._resolve_client_ip
     with patch.object(settings, "TRUSTED_PROXIES", ["127.0.0.1"]):
-        resolved = ProductionSecurityMiddleware._resolve_client_ip(req)
-        assert resolved == "203.0.113.50"
-
-    # Request without client tuple
-    req_no_client = Request({"type": "http", "headers": []})
-    assert ProductionSecurityMiddleware._resolve_client_ip(req_no_client) == "unknown"
-
-    # Request with trusted peer but no X-Forwarded-For header
-    req_no_forwarded = Request({"type": "http", "client": ("127.0.0.1", 12345), "headers": []})
-    with patch.object(settings, "TRUSTED_PROXIES", ["127.0.0.1"]):
-        assert ProductionSecurityMiddleware._resolve_client_ip(req_no_forwarded) == "127.0.0.1"
-
-    # Request with trusted peer and empty/whitespace X-Forwarded-For header
-    req_whitespace_forwarded = Request(
-        {"type": "http", "client": ("127.0.0.1", 12345), "headers": [(b"x-forwarded-for", b"   ")]}
-    )
-    with patch.object(settings, "TRUSTED_PROXIES", ["127.0.0.1"]):
-        assert ProductionSecurityMiddleware._resolve_client_ip(req_whitespace_forwarded) == "127.0.0.1"
+        assert resolve(request(forwarded=b"203.0.113.50, 10.0.0.1")) == "203.0.113.50"
+        assert resolve(request()) == "127.0.0.1"
+        assert resolve(request(forwarded=b"   ")) == "127.0.0.1"
+        assert resolve(request(client_addr=("8.8.8.8", 1), forwarded=b"1.2.3.4")) == "8.8.8.8"
+    assert resolve(request(client_addr=None)) == "unknown"
 
 
-def test_analyze_endpoint_no_technical_diagnostics(test_image_bytes):
-    with patch("app.api.routes.analyze_profile_photo_image", return_value={"accepted": True}):
-        response = client.post(
-            "/analyze-profile-photo",
-            files={"file": ("profile.jpg", test_image_bytes, "image/jpeg")},
-        )
-        assert response.status_code == 200
-        assert "technical_diagnostics" not in response.json()
-
-
-def test_rate_limit_pruning():
+def test_rate_limit_record_pruning():
     import time
 
     import app.main as app_main
-    from app.core.config import settings
-    from app.main import ProductionSecurityMiddleware
 
     now = time.time()
     with app_main._rate_limit_lock:
         app_main._request_records.clear()
-        app_main._request_records["1.1.1.1"] = [now - 120.0]
-        app_main._request_records["2.2.2.2"] = [now]
-        app_main._request_records["3.3.3.3"] = []
-
+        app_main._request_records.update({"1.1.1.1": [now - 120.0], "2.2.2.2": [now], "3.3.3.3": []})
     ProductionSecurityMiddleware._prune_rate_limit_records(now)
-    with app_main._rate_limit_lock:
-        assert "1.1.1.1" not in app_main._request_records
-        assert "3.3.3.3" not in app_main._request_records
-        assert "2.2.2.2" in app_main._request_records
+    assert set(app_main._request_records) == {"2.2.2.2"}
 
-    # Test capacity cap eviction
     with patch.object(settings, "MAX_TRACKED_IPS", 2):
-        with app_main._rate_limit_lock:
-            app_main._request_records["4.4.4.4"] = [now]
-            app_main._request_records["5.5.5.5"] = [now]
+        app_main._request_records.update({"4.4.4.4": [now], "5.5.5.5": [now]})
         ProductionSecurityMiddleware._prune_rate_limit_records(now)
-        with app_main._rate_limit_lock:
-            assert len(app_main._request_records) <= 2
-
-    # Test threshold trigger inside _check_rate_limit (> 100 entries)
-    with app_main._rate_limit_lock:
-        app_main._request_records.clear()
-        for i in range(105):
-            app_main._request_records[f"10.0.0.{i}"] = [now - 120.0]
-
-    ProductionSecurityMiddleware._check_rate_limit("10.0.0.200", now)
-    with app_main._rate_limit_lock:
         assert len(app_main._request_records) <= 2
+
+    app_main._request_records.clear()
+    for i in range(105):
+        app_main._request_records[f"10.0.0.{i}"] = [now - 120.0]
+    ProductionSecurityMiddleware._check_rate_limit("10.0.0.200", now)
+    assert len(app_main._request_records) <= 2
+
+
+def test_module_entrypoint_launches_uvicorn():
+    import app.__main__ as entry
+
+    with patch("uvicorn.run") as run:
+        entry.main()
+    run.assert_called_once()
+    assert run.call_args.args[0] == "app.main:app"
+    assert run.call_args.kwargs["reload"] is False
+
+
+def test_package_exposes_single_version():
+    import app as package
+
+    assert package.__version__ == settings.APP_VERSION
+
+
+def test_python_dash_m_entrypoint():
+    import runpy
+
+    with patch("uvicorn.run") as run:
+        runpy.run_module("app", run_name="__main__")
+    run.assert_called_once()

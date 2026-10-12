@@ -33,12 +33,12 @@ jobs:
 
       - name: Run Ruff Linter & Formatter Check
         run: |
-          ruff check app tests app.py
-          ruff format --check app tests app.py
+          ruff check app tests scripts
+          ruff format --check app tests scripts
 
-      - name: Run Test Suite with 100% Coverage
+      - name: Run Test Suite (100% coverage required; real-model tests skip when models are not built)
         run: |
-          pytest --cov=app --cov=app.py --cov-config=.coveragerc --cov-report=term-missing --cov-report=xml
+          pytest --cov=app --cov-config=.coveragerc --cov-report=term-missing --cov-report=xml --cov-fail-under=100
 
       - name: SonarQube Cloud Scan
         if: ${{ env.SONAR_TOKEN != '' }}
