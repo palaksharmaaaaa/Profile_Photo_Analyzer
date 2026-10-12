@@ -1,11 +1,13 @@
-from typing import Dict, Any, Optional, Tuple
+from typing import Any
+
 import cv2
 import numpy as np
+
 from app.core.config import settings
 from app.services.image_utils import clamp_box
 
 
-def check_image_information(image_bgr: np.ndarray) -> Dict[str, Any]:
+def check_image_information(image_bgr: np.ndarray) -> dict[str, Any]:
     """
     Check if the image contains any real visual information vs blank,
     solid color, or uniform tone with zero entropy/structure.
@@ -16,7 +18,7 @@ def check_image_information(image_bgr: np.ndarray) -> Dict[str, Any]:
             "entropy": 0.0,
             "std_dev": 0.0,
             "laplacian_var": 0.0,
-            "reason": "Image has no data or dimensions."
+            "reason": "Image has no data or dimensions.",
         }
 
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
@@ -39,7 +41,9 @@ def check_image_information(image_bgr: np.ndarray) -> Dict[str, Any]:
     )
 
     if is_solid:
-        reason = "This image contains no visual information to check or process (it is blank, solid color, or uniform fill)."
+        reason = (
+            "This image contains no visual information to check or process (it is blank, solid color, or uniform fill)."
+        )
     else:
         reason = "Image contains valid visual entropy and information."
 
@@ -48,7 +52,7 @@ def check_image_information(image_bgr: np.ndarray) -> Dict[str, Any]:
         "entropy": round(entropy, 3),
         "std_dev": round(std_val, 3),
         "laplacian_var": round(lap_var, 3),
-        "reason": reason
+        "reason": reason,
     }
 
 
@@ -56,15 +60,10 @@ def _check_edge_touch(x1: int, y1: int, x2: int, y2: int, width: int, height: in
     """Check if bounding box contacts image boundaries."""
     margin_x = max(settings.MIN_EDGE_MARGIN_PIXELS, int(width * settings.EDGE_MARGIN_RATIO))
     margin_y = max(settings.MIN_EDGE_MARGIN_PIXELS, int(height * settings.EDGE_MARGIN_RATIO))
-    return (
-        x1 <= margin_x
-        or y1 <= margin_y
-        or x2 >= width - margin_x
-        or y2 >= height - margin_y
-    )
+    return x1 <= margin_x or y1 <= margin_y or x2 >= width - margin_x or y2 >= height - margin_y
 
 
-def _check_landmarks(landmarks: Optional[np.ndarray], width: int, height: int) -> Tuple[bool, bool]:
+def _check_landmarks(landmarks: np.ndarray | None, width: int, height: int) -> tuple[bool, bool]:
     """Verify facial keypoints presence and boundaries."""
     if landmarks is None:
         return False, False
@@ -88,29 +87,34 @@ def _resolve_quality_verdict(
     face_area_ratio: float,
     sharpness: float,
     landmarks_available: bool,
-    landmarks_inside: bool
-) -> Tuple[str, str]:
+    landmarks_inside: bool,
+) -> tuple[str, str]:
     """Determine status and reasoning based on prioritized quality metrics."""
     if touches_edge:
         return "PARTIAL_OR_CROPPED", "The face box is too close to an image edge."
     if brightness < settings.MIN_BRIGHTNESS:
-        return "UNCERTAIN", "The face appears significantly underexposed or in poor lighting."
+        return (
+            "UNCERTAIN",
+            "The face appears significantly underexposed or in poor lighting.",
+        )
     if brightness > settings.MAX_BRIGHTNESS:
         return "UNCERTAIN", "The face appears overexposed or washed out."
     if face_area_ratio < settings.MIN_FACE_AREA_RATIO:
         return "UNCERTAIN", "The face is too small in the frame for a profile photo."
     if sharpness < settings.MIN_SHARPNESS_SCORE:
-        return "UNCERTAIN", f"The face image may be blurry (sharpness score {sharpness:.1f} < {settings.MIN_SHARPNESS_SCORE:.1f})."
+        return (
+            "UNCERTAIN",
+            f"The face image may be blurry (sharpness score {sharpness:.1f} < {settings.MIN_SHARPNESS_SCORE:.1f}).",
+        )
     if not landmarks_available or not landmarks_inside:
         return "UNCERTAIN", "Facial landmarks could not be verified reliably."
-    return "LIKELY_COMPLETE", "The face is well-framed, sharp, and all key facial landmarks are visible."
+    return (
+        "LIKELY_COMPLETE",
+        "The face is well-framed, sharp, and all key facial landmarks are visible.",
+    )
 
 
-def assess_face_quality(
-    image_bgr: np.ndarray,
-    face_box: list,
-    landmarks: Optional[np.ndarray] = None
-) -> Dict[str, Any]:
+def assess_face_quality(image_bgr: np.ndarray, face_box: list, landmarks: np.ndarray | None = None) -> dict[str, Any]:
     """
     Evaluate face visibility, sharpness, exposure, framing, and landmarks.
     """
@@ -151,7 +155,7 @@ def assess_face_quality(
         face_area_ratio,
         sharpness,
         landmarks_available,
-        landmarks_inside
+        landmarks_inside,
     )
 
     return {

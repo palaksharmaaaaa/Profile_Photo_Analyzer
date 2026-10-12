@@ -1,5 +1,5 @@
 import numpy as np
-import pytest
+
 from app.services.quality_service import assess_face_quality
 
 
@@ -10,13 +10,7 @@ def test_quality_service_complete_face():
     image[150:350, 150:350] = np.random.randint(40, 200, (200, 200, 3), dtype=np.uint8)
 
     face_box = [150, 150, 350, 350]
-    landmarks = np.array([
-        [200, 200],
-        [300, 200],
-        [250, 250],
-        [220, 300],
-        [280, 300]
-    ])
+    landmarks = np.array([[200, 200], [300, 200], [250, 250], [220, 300], [280, 300]])
 
     result = assess_face_quality(image, face_box, landmarks)
     assert result["status"] == "LIKELY_COMPLETE"
@@ -124,6 +118,7 @@ def test_quality_service_landmarks_malformed_shape():
 
 def test_check_image_information_valid():
     from app.services.quality_service import check_image_information
+
     img = np.random.randint(20, 220, (100, 100, 3), dtype=np.uint8)
     res = check_image_information(img)
     assert res["has_information"] is True
@@ -132,6 +127,7 @@ def test_check_image_information_valid():
 
 def test_check_image_information_blank_or_solid():
     from app.services.quality_service import check_image_information
+
     blank = np.zeros((100, 100, 3), dtype=np.uint8)
     res = check_image_information(blank)
     assert res["has_information"] is False
@@ -144,6 +140,7 @@ def test_check_image_information_blank_or_solid():
 
 def test_check_image_information_empty():
     from app.services.quality_service import check_image_information
+
     empty = np.zeros((0, 0, 3), dtype=np.uint8)
     res = check_image_information(empty)
     assert res["has_information"] is False
@@ -151,5 +148,3 @@ def test_check_image_information_empty():
 
     none_res = check_image_information(None)
     assert none_res["has_information"] is False
-
-

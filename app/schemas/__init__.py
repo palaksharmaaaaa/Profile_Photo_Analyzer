@@ -1,15 +1,15 @@
 from app.schemas.analysis import (
-    FaceVisibilityResult,
-    ImageTypeResult,
-    ImagePredictionItem,
     AnalysisResponse,
     ErrorResponse,
+    FaceVisibilityResult,
+    ImagePredictionItem,
+    ImageTypeResult,
 )
 
 __all__ = [
-    "FaceVisibilityResult",
-    "ImageTypeResult",
-    "ImagePredictionItem",
     "AnalysisResponse",
     "ErrorResponse",
+    "FaceVisibilityResult",
+    "ImagePredictionItem",
+    "ImageTypeResult",
 ]

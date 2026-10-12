@@ -1,6 +1,7 @@
 import io
-import pytest
+
 import numpy as np
+import pytest
 from PIL import Image
 
 
@@ -25,22 +26,17 @@ def test_image_bytes(test_image_rgb) -> bytes:
 
 class MockFace:
     """Mock InsightFace detection result."""
-    def __init__(
-        self,
-        bbox=(200, 200, 400, 400),
-        det_score=0.98,
-        kps=None,
-        age=28.0,
-        gender=1
-    ):
+
+    def __init__(self, bbox=(200, 200, 400, 400), det_score=0.98, kps=None, age=28.0, gender=1):
         self.bbox = np.array(bbox, dtype=np.float32)
         self.det_score = det_score
-        self.kps = kps if kps is not None else np.array([
-            [250, 260],
-            [350, 260],
-            [300, 300],
-            [260, 350],
-            [340, 350]
-        ], dtype=np.float32)
+        self.kps = (
+            kps
+            if kps is not None
+            else np.array(
+                [[250, 260], [350, 260], [300, 300], [260, 350], [340, 350]],
+                dtype=np.float32,
+            )
+        )
         self.age = age
         self.gender = gender

@@ -1,8 +1,10 @@
 import io
 import logging
 import time
+import warnings
 from pathlib import Path
-from typing import Annotated, Optional, Tuple
+from typing import Annotated
+
 from fastapi import APIRouter, File, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from PIL import Image
@@ -36,11 +38,11 @@ def health():
     return {
         "status": "ready" if all_ready else "degraded",
         "version": settings.APP_VERSION,
-        "models": models_status
+        "models": models_status,
     }
 
 
-def _validate_upload_extension(filename: str) -> Optional[JSONResponse]:
+def _validate_upload_extension(filename: str) -> JSONResponse | None:
     """Validate that filename has an allowed extension."""
     extension = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if extension not in settings.ALLOWED_EXTENSIONS:
@@ -48,66 +50,107 @@ def _validate_upload_extension(filename: str) -> Optional[JSONResponse]:
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
                 "accepted": False,
-                "reason": f"Only {', '.join(sorted(settings.ALLOWED_EXTENSIONS))} files are allowed."
-            }
+                "reason": f"Only {', '.join(sorted(settings.ALLOWED_EXTENSIONS))} files are allowed.",
+            },
         )
     return None
 
 
-def _read_and_validate_upload_bytes(file: UploadFile) -> Tuple[Optional[bytes], Optional[JSONResponse]]:
+def _read_and_validate_upload_bytes(
+    file: UploadFile,
+) -> tuple[bytes | None, JSONResponse | None]:
     """Read upload contents and validate file size limits."""
     contents = file.file.read(settings.MAX_UPLOAD_BYTES + 1)
     if not contents:
         return None, JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"accepted": False, "reason": "The uploaded file is empty."}
+            content={"accepted": False, "reason": "The uploaded file is empty."},
         )
     if len(contents) > settings.MAX_UPLOAD_BYTES:
         max_mb = settings.MAX_UPLOAD_BYTES // (1024 * 1024)
         return None, JSONResponse(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            content={"accepted": False, "reason": f"Maximum upload size is {max_mb} MB."}
+            content={
+                "accepted": False,
+                "reason": f"Maximum upload size is {max_mb} MB.",
+            },
         )
     return contents, None
 
 
-def _decode_and_validate_image(contents: bytes) -> Tuple[Optional[Image.Image], Optional[str], Optional[JSONResponse]]:
+def _decode_and_validate_image(
+    contents: bytes,
+) -> tuple[Image.Image | None, str | None, JSONResponse | None]:
     """Verify magic bytes and decode PIL image with dimension limits."""
     try:
         format_detected = sniff_image_magic_bytes(contents)
     except ValueError as exc:
         logger.warning("Magic bytes validation failed: %s", exc)
-        return None, None, JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"accepted": False, "reason": str(exc)}
+        return (
+            None,
+            None,
+            JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"accepted": False, "reason": str(exc)},
+            ),
         )
 
     try:
         Image.MAX_IMAGE_PIXELS = settings.MAX_IMAGE_PIXELS
-        image = Image.open(io.BytesIO(contents))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            image = Image.open(io.BytesIO(contents))
         if image.width > settings.MAX_IMAGE_DIMENSION or image.height > settings.MAX_IMAGE_DIMENSION:
-            return None, None, JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "accepted": False,
-                    "reason": f"Image dimension exceeds {settings.MAX_IMAGE_DIMENSION}px limit ({image.width}x{image.height})."
-                }
+            return (
+                None,
+                None,
+                JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={
+                        "accepted": False,
+                        "reason": f"Image dimension exceeds {settings.MAX_IMAGE_DIMENSION}px limit ({image.width}x{image.height}).",
+                    },
+                ),
             )
         if (image.width * image.height) > settings.MAX_IMAGE_PIXELS:
-            return None, None, JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "accepted": False,
-                    "reason": f"Image pixel count exceeds maximum permitted ({settings.MAX_IMAGE_PIXELS} pixels)."
-                }
+            return (
+                None,
+                None,
+                JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={
+                        "accepted": False,
+                        "reason": f"Image pixel count exceeds maximum permitted ({settings.MAX_IMAGE_PIXELS} pixels).",
+                    },
+                ),
             )
         image.load()
         return image.convert("RGB"), format_detected, None
+    except Image.DecompressionBombError:
+        logger.warning("Decompression bomb detected in uploaded image")
+        return (
+            None,
+            None,
+            JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "accepted": False,
+                    "reason": "Image pixel count exceeds maximum permitted decompression limit.",
+                },
+            ),
+        )
     except (OSError, ValueError) as exc:
         logger.warning("Failed to decode image: %s", exc)
-        return None, None, JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"accepted": False, "reason": "The uploaded file is not a valid supported image."}
+        return (
+            None,
+            None,
+            JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "accepted": False,
+                    "reason": "The uploaded file is not a valid supported image.",
+                },
+            ),
         )
 
 
@@ -144,6 +187,6 @@ def analyze_profile_photo(file: Annotated[UploadFile, File()]):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={
                 "accepted": False,
-                "reason": "Analysis failed. Check server logs."
-            }
+                "reason": "Analysis failed. Check server logs.",
+            },
         )

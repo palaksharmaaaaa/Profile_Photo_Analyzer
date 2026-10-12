@@ -1,9 +1,11 @@
 import io
 from unittest.mock import patch
-from PIL import Image
+
 from fastapi.testclient import TestClient
-from app.schemas.analysis import AnalysisResponse, ErrorResponse
+from PIL import Image
+
 from app import app
+from app.schemas.analysis import AnalysisResponse
 from tests.conftest import MockFace
 
 client = TestClient(app)
@@ -25,7 +27,10 @@ def test_health_endpoint():
 
 
 def test_health_endpoint_degraded():
-    with patch("app.api.routes.check_models_status", return_value={"yunet": {"ready": False, "size_bytes": 0}}):
+    with patch(
+        "app.api.routes.check_models_status",
+        return_value={"yunet": {"ready": False, "size_bytes": 0}},
+    ):
         response = client.get("/health")
         assert response.status_code == 200
         data = response.json()
@@ -37,7 +42,7 @@ def test_analyze_endpoint_valid_image(test_image_bytes):
     with patch("app.services.analyzer.detect_faces", return_value=faces):
         response = client.post(
             "/analyze-profile-photo",
-            files={"file": ("profile.jpg", test_image_bytes, "image/jpeg")}
+            files={"file": ("profile.jpg", test_image_bytes, "image/jpeg")},
         )
         assert response.status_code == 200
         data = response.json()
@@ -51,7 +56,7 @@ def test_analyze_endpoint_valid_image(test_image_bytes):
 def test_analyze_endpoint_invalid_extension():
     response = client.post(
         "/analyze-profile-photo",
-        files={"file": ("malicious.exe", b"binarycontent", "application/octet-stream")}
+        files={"file": ("malicious.exe", b"binarycontent", "application/octet-stream")},
     )
     assert response.status_code == 400
     data = response.json()
@@ -60,10 +65,7 @@ def test_analyze_endpoint_invalid_extension():
 
 
 def test_analyze_endpoint_empty_file():
-    response = client.post(
-        "/analyze-profile-photo",
-        files={"file": ("empty.jpg", b"", "image/jpeg")}
-    )
+    response = client.post("/analyze-profile-photo", files={"file": ("empty.jpg", b"", "image/jpeg")})
     assert response.status_code == 400
     data = response.json()
     assert data["accepted"] is False
@@ -73,7 +75,7 @@ def test_analyze_endpoint_empty_file():
 def test_analyze_endpoint_corrupted_image():
     response = client.post(
         "/analyze-profile-photo",
-        files={"file": ("corrupt.jpg", b"NOT_AN_IMAGE_DATA_HEADER", "image/jpeg")}
+        files={"file": ("corrupt.jpg", b"NOT_AN_IMAGE_DATA_HEADER", "image/jpeg")},
     )
     assert response.status_code == 400
     data = response.json()
@@ -85,7 +87,7 @@ def test_analyze_endpoint_corrupt_data_valid_header():
     corrupted_jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 40
     response = client.post(
         "/analyze-profile-photo",
-        files={"file": ("corrupt.jpg", corrupted_jpeg, "image/jpeg")}
+        files={"file": ("corrupt.jpg", corrupted_jpeg, "image/jpeg")},
     )
     assert response.status_code == 400
     data = response.json()
@@ -95,12 +97,10 @@ def test_analyze_endpoint_corrupt_data_valid_header():
 
 def test_analyze_endpoint_file_too_large():
     from app.core.config import settings
+
     # 9 MB dummy payload
     oversized = b"0" * (settings.MAX_UPLOAD_BYTES + 10)
-    response = client.post(
-        "/analyze-profile-photo",
-        files={"file": ("huge.jpg", oversized, "image/jpeg")}
-    )
+    response = client.post("/analyze-profile-photo", files={"file": ("huge.jpg", oversized, "image/jpeg")})
     assert response.status_code == 413
     data = response.json()
     assert data["accepted"] is False
@@ -108,10 +108,13 @@ def test_analyze_endpoint_file_too_large():
 
 
 def test_analyze_endpoint_internal_error(test_image_bytes):
-    with patch("app.api.routes.analyze_profile_photo_image", side_effect=RuntimeError("Unexpected crash")):
+    with patch(
+        "app.api.routes.analyze_profile_photo_image",
+        side_effect=RuntimeError("Unexpected crash"),
+    ):
         response = client.post(
             "/analyze-profile-photo",
-            files={"file": ("profile.jpg", test_image_bytes, "image/jpeg")}
+            files={"file": ("profile.jpg", test_image_bytes, "image/jpeg")},
         )
         assert response.status_code == 500
         data = response.json()
@@ -129,6 +132,7 @@ def test_home_template_not_found():
 def test_app_main_block():
     with patch("uvicorn.run") as mock_uvicorn:
         import runpy
+
         runpy.run_path("app.py", run_name="__main__")
         mock_uvicorn.assert_called_once()
 
@@ -139,25 +143,31 @@ def test_analyze_endpoint_dimension_too_large():
     img.save(buf, format="JPEG")
     payload = buf.getvalue()
 
-    response = client.post(
-        "/analyze-profile-photo",
-        files={"file": ("wide.jpg", payload, "image/jpeg")}
-    )
+    response = client.post("/analyze-profile-photo", files={"file": ("wide.jpg", payload, "image/jpeg")})
     assert response.status_code == 400
     assert "limit" in response.json()["reason"]
 
 
 def test_analyze_endpoint_pixel_count_too_large():
-    img = Image.new("RGB", (4000, 4001), color="white")
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG")
-    payload = buf.getvalue()
+    import warnings
 
-    response = client.post(
-        "/analyze-profile-photo",
-        files={"file": ("bomb.jpg", payload, "image/jpeg")}
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+        img = Image.new("RGB", (4000, 4001), color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        payload = buf.getvalue()
+
+    response = client.post("/analyze-profile-photo", files={"file": ("bomb.jpg", payload, "image/jpeg")})
     assert response.status_code == 400
     assert "pixel count" in response.json()["reason"]
 
 
+def test_analyze_endpoint_decompression_bomb_error(test_image_bytes):
+    with patch(
+        "PIL.Image.open",
+        side_effect=Image.DecompressionBombError("Decompression bomb DOS attack"),
+    ):
+        response = client.post("/analyze-profile-photo", files={"file": ("bomb.jpg", test_image_bytes, "image/jpeg")})
+        assert response.status_code == 400
+        assert "decompression limit" in response.json()["reason"]

@@ -1,4 +1,3 @@
-from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 
@@ -9,8 +8,8 @@ class FaceVisibilityResult(BaseModel):
     sharpness_score: float = 0.0
     landmarks_available: bool = False
     landmarks_inside_image: bool = False
-    brightness_score: Optional[float] = None
-    face_area_ratio: Optional[float] = None
+    brightness_score: float | None = None
+    face_area_ratio: float | None = None
 
 
 class ImagePredictionItem(BaseModel):
@@ -25,8 +24,8 @@ class ImageTypeResult(BaseModel):
     photo_score: float
     cartoon_score: float
     display_label: str
-    all_predictions: List[ImagePredictionItem] = Field(default_factory=list)
-    scores: Dict[str, float] = Field(default_factory=dict)
+    all_predictions: list[ImagePredictionItem] = Field(default_factory=list)
+    scores: dict[str, float] = Field(default_factory=dict)
     reason: str
 
 
@@ -46,22 +45,22 @@ class OtherFaceItem(BaseModel):
     face_type: str  # animal, bird, cartoon_or_illustration, biological_diagram
     label: str
     confidence: float
-    box_xyxy: List[int]
-    box_normalized: List[float] = Field(default_factory=list)  # [ymin%, xmin%, ymax%, xmax%]
+    box_xyxy: list[int]
+    box_normalized: list[float] = Field(default_factory=list)  # [ymin%, xmin%, ymax%, xmax%]
 
 
 class HumanFaceItem(BaseModel):
     face_id: int
-    box_xyxy: List[int]
-    box_normalized: List[float] = Field(default_factory=list)  # [ymin%, xmin%, ymax%, xmax%]
+    box_xyxy: list[int]
+    box_normalized: list[float] = Field(default_factory=list)  # [ymin%, xmin%, ymax%, xmax%]
     detection_confidence: float
     gender: str = NOT_DETECTED
-    gender_confidence: Optional[float] = None
+    gender_confidence: float | None = None
     age_group: str = NOT_DETECTED
-    estimated_age: Optional[float] = None
-    age_confidence: Optional[float] = None
+    estimated_age: float | None = None
+    age_confidence: float | None = None
     possible_minor_risk: bool = False
-    face_visibility: Optional[FaceVisibilityResult] = None
+    face_visibility: FaceVisibilityResult | None = None
     is_primary: bool = False
 
 
@@ -81,7 +80,7 @@ class TechnicalDiagnostics(BaseModel):
     entropy_score: float = 0.0
     std_dev_score: float = 0.0
     laplacian_var: float = 0.0
-    models_executed: List[str] = Field(default_factory=list)
+    models_executed: list[str] = Field(default_factory=list)
 
 
 class AnalysisResponse(BaseModel):
@@ -97,37 +96,36 @@ class AnalysisResponse(BaseModel):
     total_face_count: int = 0
     real_human_face_count: int = 0
     other_face_count: int = 0
-    human_faces: List[HumanFaceItem] = Field(default_factory=list)
-    other_faces: List[OtherFaceItem] = Field(default_factory=list)
-    pipeline_steps: List[PipelineStepItem] = Field(default_factory=list)
-    technical_diagnostics: Optional[TechnicalDiagnostics] = None
+    human_faces: list[HumanFaceItem] = Field(default_factory=list)
+    other_faces: list[OtherFaceItem] = Field(default_factory=list)
+    pipeline_steps: list[PipelineStepItem] = Field(default_factory=list)
+    technical_diagnostics: TechnicalDiagnostics | None = None
     processing_time_ms: float = 0.0
 
     # Primary / Legacy fields for single-face callers
     face_count: int = 0
-    face_visibility: Optional[FaceVisibilityResult] = None
+    face_visibility: FaceVisibilityResult | None = None
     estimated_age_group: str = NOT_DETECTED
-    age_model_confidence: Optional[float] = None
-    age_note: Optional[str] = None
-    age_prediction_error: Optional[str] = None
+    age_model_confidence: float | None = None
+    age_note: str | None = None
+    age_prediction_error: str | None = None
     possible_minor_risk: bool = False
     age_verification_required: bool = True
     gender_presentation_prediction: str = NOT_DETECTED
 
-    gender_note: Optional[str] = None
-    gender_prediction_error: Optional[str] = None
-    face_detection_confidence: Optional[float] = None
-    face_box_xyxy: Optional[List[int]] = None
-    face_regions_xyxy: Optional[List[List[int]]] = None
+    gender_note: str | None = None
+    gender_prediction_error: str | None = None
+    face_detection_confidence: float | None = None
+    face_box_xyxy: list[int] | None = None
+    face_regions_xyxy: list[list[int]] | None = None
     age_gender_prediction_performed: bool = False
-    original_image: Optional[str] = None
-    annotated_image: Optional[str] = None
-    filename: Optional[str] = None
-    region_note: Optional[str] = None
-    note: Optional[str] = None
+    original_image: str | None = None
+    annotated_image: str | None = None
+    filename: str | None = None
+    region_note: str | None = None
+    note: str | None = None
 
 
 class ErrorResponse(BaseModel):
     accepted: bool = False
     reason: str
-

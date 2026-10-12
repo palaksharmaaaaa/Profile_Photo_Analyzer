@@ -1,12 +1,13 @@
 import logging
-from typing import Dict, Any, List, Tuple, Optional
-import numpy as np
+from typing import Any
+
 import cv2
+import numpy as np
 from PIL import Image
 
 from app.core.config import settings
 from app.services.image_utils import clamp_box
-from app.services.model_manager import get_yolo_session, get_anime_face_session
+from app.services.model_manager import get_anime_face_session, get_yolo_session
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ IMAGE_LABELS = [
     LABEL_DIGITAL_PAINTING,
     LABEL_3D,
     LABEL_OBJECT,
-    LABEL_DIAGRAM
+    LABEL_DIAGRAM,
 ]
 
 SYNTHETIC_KEYWORDS = (
@@ -34,12 +35,12 @@ SYNTHETIC_KEYWORDS = (
     "illustration",
     "digital painting",
     "computer-generated",
-    "diagram"
+    "diagram",
 )
 
 KEYWORD_REAL_PHOTO = "real photograph"
 
-COCO_ANIMAL_CLASSES: Dict[int, Tuple[str, str]] = {
+COCO_ANIMAL_CLASSES: dict[int, tuple[str, str]] = {
     14: ("bird", "Bird"),
     15: ("animal", "Cat"),
     16: ("animal", "Dog"),
@@ -61,12 +62,13 @@ def get_clip_pipeline():
     if _clip_pipeline is None:
         try:
             from transformers import pipeline
+
             device = -1 if settings.FORCE_CPU else 0
             logger.info("Initializing zero-shot image classifier pipeline...")
             _clip_pipeline = pipeline(
                 "zero-shot-image-classification",
                 model=settings.CLIP_MODEL_NAME,
-                device=device
+                device=device,
             )
         except Exception as exc:
             logger.warning(f"Could not load Hugging Face CLIP pipeline: {exc}")
@@ -99,17 +101,17 @@ def _decode_yolo_predictions(
     orig_w: int,
     orig_h: int,
     score_threshold: float,
-    is_anime: bool = False
-) -> List[Dict[str, Any]]:
+    is_anime: bool = False,
+) -> list[dict[str, Any]]:
     """Decode YOLO output tensor (shape [1, C, 8400]) into boxes and scores with NMS."""
     if output_tensor is None or len(output_tensor.shape) != 3:
         return []
 
     # Transpose [1, C, 8400] -> [8400, C]
     features = output_tensor[0].T
-    boxes: List[List[int]] = []
-    scores: List[float] = []
-    labels: List[Tuple[str, str]] = []
+    boxes: list[list[int]] = []
+    scores: list[float] = []
+    labels: list[tuple[str, str]] = []
 
     scale_x = orig_w / 640.0
     scale_y = orig_h / 640.0
@@ -120,10 +122,10 @@ def _decode_yolo_predictions(
         valid_rows = features[mask]
         for row in valid_rows:
             cx, cy, w, h = row[0], row[1], row[2], row[3]
-            x1 = int(round((cx - w / 2.0) * scale_x))
-            y1 = int(round((cy - h / 2.0) * scale_y))
-            bw = int(round(w * scale_x))
-            bh = int(round(h * scale_y))
+            x1 = round((cx - w / 2.0) * scale_x)
+            y1 = round((cy - h / 2.0) * scale_y)
+            bw = round(w * scale_x)
+            bh = round(h * scale_y)
             boxes.append([x1, y1, bw, bh])
             scores.append(float(row[4]))
             labels.append(("cartoon_or_illustration", "Anime / Cartoon Character"))
@@ -141,10 +143,10 @@ def _decode_yolo_predictions(
             cid = int(cls_id)
             if cid in COCO_ANIMAL_CLASSES:
                 cx, cy, w, h = row[0], row[1], row[2], row[3]
-                x1 = int(round((cx - w / 2.0) * scale_x))
-                y1 = int(round((cy - h / 2.0) * scale_y))
-                bw = int(round(w * scale_x))
-                bh = int(round(h * scale_y))
+                x1 = round((cx - w / 2.0) * scale_x)
+                y1 = round((cy - h / 2.0) * scale_y)
+                bw = round(w * scale_x)
+                bh = round(h * scale_y)
                 boxes.append([x1, y1, bw, bh])
                 scores.append(float(score))
                 labels.append(COCO_ANIMAL_CLASSES[cid])
@@ -162,16 +164,18 @@ def _decode_yolo_predictions(
         bx, by, bw, bh = boxes[i]
         clamped = list(clamp_box([bx, by, bx + bw, by + bh], orig_w, orig_h))
         ftype, flabel = labels[i]
-        results.append({
-            "face_type": ftype,
-            "label": flabel,
-            "confidence": round(scores[i], 3),
-            "box_xyxy": clamped
-        })
+        results.append(
+            {
+                "face_type": ftype,
+                "label": flabel,
+                "confidence": round(scores[i], 3),
+                "box_xyxy": clamped,
+            }
+        )
     return results
 
 
-def detect_non_human_entities(image_bgr: np.ndarray) -> List[Dict[str, Any]]:
+def detect_non_human_entities(image_bgr: np.ndarray) -> list[dict[str, Any]]:
     """
     Run lightweight YOLOv8 models to detect:
     1. Animals & Birds (COCO classes)
@@ -184,7 +188,7 @@ def detect_non_human_entities(image_bgr: np.ndarray) -> List[Dict[str, Any]]:
     resized = cv2.resize(image_bgr, (640, 640))
     blob = (resized.astype(np.float32) / 255.0).transpose(2, 0, 1)[np.newaxis, :, :, :]
 
-    entities: List[Dict[str, Any]] = []
+    entities: list[dict[str, Any]] = []
 
     # 1. Animals & Birds via YOLOv8n
     yolo_session = get_yolo_session()
@@ -244,13 +248,10 @@ def is_biological_diagram_or_drawing(crop_bgr: np.ndarray) -> bool:
     edges = cv2.Canny(gray, 50, 150)
     edge_ratio = float(np.mean(edges > 0))
 
-    if white_ratio > 0.50 and edge_ratio > 0.05 and skin_ratio < 0.10:
-        return True
-
-    return False
+    return bool(white_ratio > 0.5 and edge_ratio > 0.05 and skin_ratio < 0.1)
 
 
-def _compute_iou(box_a: List[int], box_b: List[int]) -> float:
+def _compute_iou(box_a: list[int], box_b: list[int]) -> float:
     """Compute Intersection over Union between two [x1, y1, x2, y2] boxes."""
     x_a = max(box_a[0], box_b[0])
     y_a = max(box_a[1], box_b[1])
@@ -269,12 +270,9 @@ def _compute_iou(box_a: List[int], box_b: List[int]) -> float:
     return float(inter_area / union) if union > 0 else 0.0
 
 
-
 def check_is_non_human_face(
-    face_box: List[int],
-    image_bgr: np.ndarray,
-    non_human_entities: List[Dict[str, Any]]
-) -> Optional[Dict[str, Any]]:
+    face_box: list[int], image_bgr: np.ndarray, non_human_entities: list[dict[str, Any]]
+) -> dict[str, Any] | None:
     """
     Check if a face box corresponds to an animal, bird, cartoon, or diagram.
     Returns entity dict if non-human, or None if genuine human candidate.
@@ -293,7 +291,7 @@ def check_is_non_human_face(
                 "face_type": ent["face_type"],
                 "label": ent["label"],
                 "confidence": ent["confidence"],
-                "box_xyxy": face_box
+                "box_xyxy": face_box,
             }
 
     # 2. Biological diagram check on face crop
@@ -304,13 +302,13 @@ def check_is_non_human_face(
             "face_type": "biological_diagram",
             "label": "Biological Diagram / Illustration",
             "confidence": 0.90,
-            "box_xyxy": face_box
+            "box_xyxy": face_box,
         }
 
     return None
 
 
-def classify_image_type(image: Image.Image) -> Dict[str, Any]:
+def classify_image_type(image: Image.Image) -> dict[str, Any]:
     """
     Classify whether image is a real photo, cartoon, anime, 3D character, diagram, or object.
     Uses zero-shot CLIP classification when available, with resilient computer vision screening.
@@ -334,10 +332,10 @@ def classify_image_type(image: Image.Image) -> Dict[str, Any]:
                 "display_label": "Biological / Scientific Diagram",
                 "all_predictions": [
                     {"label": LABEL_DIAGRAM, "confidence": 0.90},
-                    {"label": LABEL_REAL_PHOTO, "confidence": 0.05}
+                    {"label": LABEL_REAL_PHOTO, "confidence": 0.05},
                 ],
                 "scores": {LABEL_DIAGRAM: 0.90, LABEL_REAL_PHOTO: 0.05},
-                "reason": "Image has high line sparsity and vector characteristics of a diagram."
+                "reason": "Image has high line sparsity and vector characteristics of a diagram.",
             }
 
         return {
@@ -349,35 +347,22 @@ def classify_image_type(image: Image.Image) -> Dict[str, Any]:
             "display_label": "Real Photo",
             "all_predictions": [
                 {"label": LABEL_REAL_PHOTO, "confidence": 0.85},
-                {"label": LABEL_CARTOON, "confidence": 0.05}
+                {"label": LABEL_CARTOON, "confidence": 0.05},
             ],
-            "scores": {
-                LABEL_REAL_PHOTO: 0.85,
-                LABEL_CARTOON: 0.05
-            },
-            "reason": "Default screening passed (model running in lightweight edge mode)."
+            "scores": {LABEL_REAL_PHOTO: 0.85, LABEL_CARTOON: 0.05},
+            "reason": "Default screening passed (model running in lightweight edge mode).",
         }
 
     try:
-        raw_predictions = pipeline_fn(
-            image.convert("RGB"),
-            candidate_labels=IMAGE_LABELS
-        )
+        raw_predictions = pipeline_fn(image.convert("RGB"), candidate_labels=IMAGE_LABELS)
 
         if not isinstance(raw_predictions, list) or not raw_predictions:
             raise ValueError("No predictions returned by classifier.")
 
-        predictions = sorted(
-            raw_predictions,
-            key=lambda item: float(item["score"]),
-            reverse=True
-        )
+        predictions = sorted(raw_predictions, key=lambda item: float(item["score"]), reverse=True)
 
         all_predictions = [
-            {
-                "label": str(item["label"]),
-                "confidence": round(float(item["score"]), 4)
-            }
+            {"label": str(item["label"]), "confidence": round(float(item["score"]), 4)}
             for item in predictions
             if isinstance(item, dict) and "label" in item and "score" in item
         ]
@@ -390,12 +375,8 @@ def classify_image_type(image: Image.Image) -> Dict[str, Any]:
         normalized = top_label.lower()
 
         photo_score = max(
-            (
-                item["confidence"]
-                for item in all_predictions
-                if KEYWORD_REAL_PHOTO in item["label"].lower()
-            ),
-            default=0.0
+            (item["confidence"] for item in all_predictions if KEYWORD_REAL_PHOTO in item["label"].lower()),
+            default=0.0,
         )
 
         synthetic_score = max(
@@ -404,7 +385,7 @@ def classify_image_type(image: Image.Image) -> Dict[str, Any]:
                 for item in all_predictions
                 if any(k in item["label"].lower() for k in SYNTHETIC_KEYWORDS)
             ),
-            default=0.0
+            default=0.0,
         )
 
         if KEYWORD_REAL_PHOTO in normalized and photo_score >= settings.PHOTO_SCORE_THRESHOLD:
@@ -430,11 +411,8 @@ def classify_image_type(image: Image.Image) -> Dict[str, Any]:
             "cartoon_score": round(synthetic_score, 4),
             "display_label": display_label,
             "all_predictions": all_predictions,
-            "scores": {
-                item["label"]: item["confidence"]
-                for item in all_predictions
-            },
-            "reason": reason
+            "scores": {item["label"]: item["confidence"] for item in all_predictions},
+            "reason": reason,
         }
 
     except Exception:
@@ -448,5 +426,5 @@ def classify_image_type(image: Image.Image) -> Dict[str, Any]:
             "display_label": "Uncertain",
             "all_predictions": [],
             "scores": {},
-            "reason": "Image classification failed due to an internal error."
+            "reason": "Image classification failed due to an internal error.",
         }

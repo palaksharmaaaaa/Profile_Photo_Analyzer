@@ -2,7 +2,7 @@ import logging
 import os
 import urllib.request
 from pathlib import Path
-from typing import Optional, Tuple
+
 import cv2
 import onnxruntime as ort
 
@@ -10,16 +10,23 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_yunet_detector: Optional[cv2.FaceDetectorYN] = None
-_yunet_size: Tuple[int, int] = (0, 0)
-_genderage_session: Optional[ort.InferenceSession] = None
-_anime_session: Optional[ort.InferenceSession] = None
-_yolo_session: Optional[ort.InferenceSession] = None
+_yunet_detector: cv2.FaceDetectorYN | None = None
+_yunet_size: tuple[int, int] = (0, 0)
+_genderage_session: ort.InferenceSession | None = None
+_anime_session: ort.InferenceSession | None = None
+_yolo_session: ort.InferenceSession | None = None
 
 
 def is_valid_model_file(model_path: Path, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
-    """Check if model file exists and satisfies minimum byte size."""
-    return model_path.is_file() and model_path.stat().st_size >= min_size
+    """Check if model file exists, meets minimum size, and contains a valid ONNX binary protobuf header."""
+    if not (model_path.is_file() and model_path.stat().st_size >= min_size):
+        return False
+    try:
+        with open(model_path, "rb") as f:
+            header = f.read(32)
+        return bool(header and header[0] in (0x08, 0x12, 0x0A))
+    except OSError:
+        return False
 
 
 def ensure_model_file(model_path: Path, download_url: str, min_size: int = settings.MIN_MODEL_FILE_SIZE) -> bool:
@@ -27,8 +34,8 @@ def ensure_model_file(model_path: Path, download_url: str, min_size: int = setti
     if is_valid_model_file(model_path, min_size):
         return True
 
-    # Remove stale or truncated file if present
-    if model_path.is_file() and model_path.stat().st_size < min_size:
+    # Remove stale, truncated, or corrupted non-ONNX file if present
+    if model_path.is_file() and not is_valid_model_file(model_path, min_size):
         try:
             model_path.unlink()
         except OSError:
@@ -38,11 +45,11 @@ def ensure_model_file(model_path: Path, download_url: str, min_size: int = setti
     temp_path = model_path.with_suffix(f"{model_path.suffix}.tmp")
     try:
         logger.info(f"Downloading pre-trained model to {model_path} from {download_url}...")
-        req = urllib.request.Request(
-            download_url,
-            headers={"User-Agent": "ProfilePhotoAnalyzer/3.0"}
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp, open(temp_path, "wb") as f_out:
+        req = urllib.request.Request(download_url, headers={"User-Agent": "ProfilePhotoAnalyzer/3.0"})
+        with (
+            urllib.request.urlopen(req, timeout=30) as resp,
+            open(temp_path, "wb") as f_out,
+        ):
             while True:
                 chunk = resp.read(64 * 1024)
                 if not chunk:
@@ -94,12 +101,12 @@ def check_models_status() -> dict:
         result[key] = {
             "model_name": info["name"],
             "ready": ready,
-            "size_bytes": size_bytes
+            "size_bytes": size_bytes,
         }
     return result
 
 
-def get_yunet_detector(width: int = 640, height: int = 640) -> Optional[cv2.FaceDetectorYN]:
+def get_yunet_detector(width: int = 640, height: int = 640) -> cv2.FaceDetectorYN | None:
     """Retrieve or lazily initialize the OpenCV YuNet face detector."""
     global _yunet_detector, _yunet_size
     path = settings.MODELS_DIR / settings.YUNET_MODEL_NAME
@@ -113,7 +120,7 @@ def get_yunet_detector(width: int = 640, height: int = 640) -> Optional[cv2.Face
                 "",
                 (width, height),
                 score_threshold=settings.HUMAN_FACE_CONF_THRESHOLD,
-                nms_threshold=0.3
+                nms_threshold=0.3,
             )
             _yunet_size = (width, height)
         elif _yunet_size != (width, height):
@@ -125,7 +132,7 @@ def get_yunet_detector(width: int = 640, height: int = 640) -> Optional[cv2.Face
         return None
 
 
-def get_genderage_session() -> Optional[ort.InferenceSession]:
+def get_genderage_session() -> ort.InferenceSession | None:
     """Retrieve or lazily initialize the InsightFace GenderAge ONNX session."""
     global _genderage_session
     if _genderage_session is not None:
@@ -136,17 +143,14 @@ def get_genderage_session() -> Optional[ort.InferenceSession]:
         return None
 
     try:
-        _genderage_session = ort.InferenceSession(
-            str(path),
-            providers=["CPUExecutionProvider"]
-        )
+        _genderage_session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
         return _genderage_session
     except Exception as exc:
         logger.warning(f"Failed to initialize GenderAge session: {exc}")
         return None
 
 
-def get_anime_face_session() -> Optional[ort.InferenceSession]:
+def get_anime_face_session() -> ort.InferenceSession | None:
     """Retrieve or lazily initialize the Anime/Cartoon Face Detector ONNX session."""
     global _anime_session
     if _anime_session is not None:
@@ -157,17 +161,14 @@ def get_anime_face_session() -> Optional[ort.InferenceSession]:
         return None
 
     try:
-        _anime_session = ort.InferenceSession(
-            str(path),
-            providers=["CPUExecutionProvider"]
-        )
+        _anime_session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
         return _anime_session
     except Exception as exc:
         logger.warning(f"Failed to initialize Anime Face session: {exc}")
         return None
 
 
-def get_yolo_session() -> Optional[ort.InferenceSession]:
+def get_yolo_session() -> ort.InferenceSession | None:
     """Retrieve or lazily initialize the YOLOv8n ONNX session."""
     global _yolo_session
     if _yolo_session is not None:
@@ -178,10 +179,7 @@ def get_yolo_session() -> Optional[ort.InferenceSession]:
         return None
 
     try:
-        _yolo_session = ort.InferenceSession(
-            str(path),
-            providers=["CPUExecutionProvider"]
-        )
+        _yolo_session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
         return _yolo_session
     except Exception as exc:
         logger.warning(f"Failed to initialize YOLOv8n session: {exc}")

@@ -1,26 +1,26 @@
 import io
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-import pytest
+from unittest.mock import MagicMock, patch
 
 from app.services import model_manager as mm
 
 
 def test_ensure_model_file_already_exists(tmp_path):
     f = tmp_path / "model.onnx"
-    f.write_bytes(b"x" * 60000)
+    f.write_bytes(b"\x08" + b"x" * 59999)
     assert mm.ensure_model_file(f, "http://example.com/model.onnx") is True
 
 
 def test_ensure_model_file_download_success(tmp_path):
     target = tmp_path / "subdir" / "downloaded.onnx"
 
-    mock_resp = io.BytesIO(b"x" * 60000)
+    mock_resp = io.BytesIO(b"\x08" + b"x" * 59999)
     mock_resp.status = 200
 
     class DummyContext:
         def __enter__(self):
             return mock_resp
+
         def __exit__(self, *args):
             pass
 
@@ -47,8 +47,10 @@ def test_ensure_model_file_cleanup_oserror(tmp_path):
     target = tmp_path / "fail_oserror.onnx"
     temp_target = target.with_suffix(".onnx.tmp")
     temp_target.touch()
-    with patch("urllib.request.urlopen", side_effect=RuntimeError("Network down")), \
-         patch.object(Path, "unlink", side_effect=OSError("Cannot unlink")):
+    with (
+        patch("urllib.request.urlopen", side_effect=RuntimeError("Network down")),
+        patch.object(Path, "unlink", side_effect=OSError("Cannot unlink")),
+    ):
         assert mm.ensure_model_file(target, "http://example.com/fail.onnx") is False
 
 
@@ -63,22 +65,43 @@ def test_ensure_model_file_removes_truncated_file(tmp_path):
 def test_ensure_model_file_truncated_unlink_oserror(tmp_path):
     f = tmp_path / "truncated_err.onnx"
     f.write_bytes(b"short")
-    with patch.object(Path, "unlink", side_effect=OSError("Permission denied")), \
-         patch("urllib.request.urlopen", side_effect=RuntimeError("Aborted")):
+    with (
+        patch.object(Path, "unlink", side_effect=OSError("Permission denied")),
+        patch("urllib.request.urlopen", side_effect=RuntimeError("Aborted")),
+    ):
         assert mm.ensure_model_file(f, "http://example.com/truncated_err.onnx") is False
 
 
 def test_ensure_model_file_download_too_small(tmp_path):
     target = tmp_path / "too_small.onnx"
     mock_resp = io.BytesIO(b"short")
+
     class DummyContext:
         def __enter__(self):
             return mock_resp
+
         def __exit__(self, *args):
             pass
+
     with patch("urllib.request.urlopen", return_value=DummyContext()):
         assert mm.ensure_model_file(target, "http://example.com/too_small.onnx") is False
         assert not target.is_file()
+
+
+def test_is_valid_model_file_rejects_non_onnx_signature(tmp_path):
+    f = tmp_path / "fake_non_onnx.onnx"
+    f.write_bytes(b"This is a 72 KB text file masquerading as a model..." + b"x" * 72000)
+    assert mm.is_valid_model_file(f) is False
+    with patch("urllib.request.urlopen", side_effect=RuntimeError("Aborted")):
+        assert mm.ensure_model_file(f, "http://example.com/model.onnx") is False
+        assert not f.is_file()
+
+
+def test_is_valid_model_file_ioerror(tmp_path):
+    f = tmp_path / "valid.onnx"
+    f.write_bytes(b"\x08" + b"x" * 60000)
+    with patch("builtins.open", side_effect=OSError("Read error")):
+        assert mm.is_valid_model_file(f) is False
 
 
 def test_check_models_status():
@@ -100,8 +123,10 @@ def test_get_yunet_detector(monkeypatch):
 
     # initialization succeeds
     mock_yn = MagicMock()
-    with patch("app.services.model_manager.ensure_model_file", return_value=True), \
-         patch("cv2.FaceDetectorYN.create", return_value=mock_yn):
+    with (
+        patch("app.services.model_manager.ensure_model_file", return_value=True),
+        patch("cv2.FaceDetectorYN.create", return_value=mock_yn),
+    ):
         det = mm.get_yunet_detector(640, 640)
         assert det == mock_yn
 
@@ -111,8 +136,10 @@ def test_get_yunet_detector(monkeypatch):
 
     # exception in creation
     monkeypatch.setattr(mm, "_yunet_detector", None)
-    with patch("app.services.model_manager.ensure_model_file", return_value=True), \
-         patch("cv2.FaceDetectorYN.create", side_effect=RuntimeError("cv2 error")):
+    with (
+        patch("app.services.model_manager.ensure_model_file", return_value=True),
+        patch("cv2.FaceDetectorYN.create", side_effect=RuntimeError("cv2 error")),
+    ):
         assert mm.get_yunet_detector(640, 640) is None
 
 
@@ -123,16 +150,20 @@ def test_get_genderage_session(monkeypatch):
         assert mm.get_genderage_session() is None
 
     mock_sess = MagicMock()
-    with patch("app.services.model_manager.ensure_model_file", return_value=True), \
-         patch("onnxruntime.InferenceSession", return_value=mock_sess):
+    with (
+        patch("app.services.model_manager.ensure_model_file", return_value=True),
+        patch("onnxruntime.InferenceSession", return_value=mock_sess),
+    ):
         sess = mm.get_genderage_session()
         assert sess == mock_sess
         # cached return
         assert mm.get_genderage_session() == mock_sess
 
     monkeypatch.setattr(mm, "_genderage_session", None)
-    with patch("app.services.model_manager.ensure_model_file", return_value=True), \
-         patch("onnxruntime.InferenceSession", side_effect=RuntimeError("ort error")):
+    with (
+        patch("app.services.model_manager.ensure_model_file", return_value=True),
+        patch("onnxruntime.InferenceSession", side_effect=RuntimeError("ort error")),
+    ):
         assert mm.get_genderage_session() is None
 
 
@@ -143,15 +174,19 @@ def test_get_anime_face_session(monkeypatch):
         assert mm.get_anime_face_session() is None
 
     mock_sess = MagicMock()
-    with patch("app.services.model_manager.ensure_model_file", return_value=True), \
-         patch("onnxruntime.InferenceSession", return_value=mock_sess):
+    with (
+        patch("app.services.model_manager.ensure_model_file", return_value=True),
+        patch("onnxruntime.InferenceSession", return_value=mock_sess),
+    ):
         sess = mm.get_anime_face_session()
         assert sess == mock_sess
         assert mm.get_anime_face_session() == mock_sess
 
     monkeypatch.setattr(mm, "_anime_session", None)
-    with patch("app.services.model_manager.ensure_model_file", return_value=True), \
-         patch("onnxruntime.InferenceSession", side_effect=RuntimeError("ort error")):
+    with (
+        patch("app.services.model_manager.ensure_model_file", return_value=True),
+        patch("onnxruntime.InferenceSession", side_effect=RuntimeError("ort error")),
+    ):
         assert mm.get_anime_face_session() is None
 
 
@@ -162,13 +197,17 @@ def test_get_yolo_session(monkeypatch):
         assert mm.get_yolo_session() is None
 
     mock_sess = MagicMock()
-    with patch("app.services.model_manager.ensure_model_file", return_value=True), \
-         patch("onnxruntime.InferenceSession", return_value=mock_sess):
+    with (
+        patch("app.services.model_manager.ensure_model_file", return_value=True),
+        patch("onnxruntime.InferenceSession", return_value=mock_sess),
+    ):
         sess = mm.get_yolo_session()
         assert sess == mock_sess
         assert mm.get_yolo_session() == mock_sess
 
     monkeypatch.setattr(mm, "_yolo_session", None)
-    with patch("app.services.model_manager.ensure_model_file", return_value=True), \
-         patch("onnxruntime.InferenceSession", side_effect=RuntimeError("ort error")):
+    with (
+        patch("app.services.model_manager.ensure_model_file", return_value=True),
+        patch("onnxruntime.InferenceSession", side_effect=RuntimeError("ort error")),
+    ):
         assert mm.get_yolo_session() is None

@@ -1,14 +1,13 @@
+from unittest.mock import MagicMock, patch
+
 import numpy as np
-from unittest.mock import patch, MagicMock
 
 from app.services.face_service import (
     age_to_group,
-    age_to_three_year_group,
-    possible_minor_age_group,
-    extract_face_attributes,
     detect_faces,
+    extract_face_attributes,
+    possible_minor_age_group,
     predict_face_demographics,
-    get_face_app,
 )
 from tests.conftest import MockFace
 
@@ -78,8 +77,10 @@ def test_detect_faces_empty_image():
 
 
 def test_detect_faces_yunet_none():
-    with patch("app.services.face_service.get_face_app", return_value=None), \
-         patch("app.services.face_service.get_yunet_detector", return_value=None):
+    with (
+        patch("app.services.face_service.get_face_app", return_value=None),
+        patch("app.services.face_service.get_yunet_detector", return_value=None),
+    ):
         arr = np.zeros((100, 100, 3), dtype=np.uint8)
         assert detect_faces(arr) == []
 
@@ -87,13 +88,34 @@ def test_detect_faces_yunet_none():
 def test_detect_faces_yunet_execution():
     mock_detector = MagicMock()
     # Mock YuNet output: 1 face row with 15 values
-    mock_face_row = np.array([
-        [10.0, 20.0, 50.0, 60.0, 25.0, 35.0, 45.0, 35.0, 35.0, 50.0, 25.0, 65.0, 45.0, 65.0, 0.95]
-    ], dtype=np.float32)
+    mock_face_row = np.array(
+        [
+            [
+                10.0,
+                20.0,
+                50.0,
+                60.0,
+                25.0,
+                35.0,
+                45.0,
+                35.0,
+                35.0,
+                50.0,
+                25.0,
+                65.0,
+                45.0,
+                65.0,
+                0.95,
+            ]
+        ],
+        dtype=np.float32,
+    )
     mock_detector.detect.return_value = (1, mock_face_row)
 
-    with patch("app.services.face_service.get_face_app", return_value=None), \
-         patch("app.services.face_service.get_yunet_detector", return_value=mock_detector):
+    with (
+        patch("app.services.face_service.get_face_app", return_value=None),
+        patch("app.services.face_service.get_yunet_detector", return_value=mock_detector),
+    ):
         img = np.ones((100, 100, 3), dtype=np.uint8) * 100
         faces = detect_faces(img)
         assert len(faces) == 1
@@ -103,8 +125,15 @@ def test_detect_faces_yunet_execution():
 
 def test_get_face_app_failure():
     import app.services.face_service as fs
+
     fs._face_app = None
-    with patch.dict("sys.modules", {"insightface": MagicMock(), "insightface.app": MagicMock(FaceAnalysis=MagicMock(side_effect=RuntimeError("Init error")))}):
+    with patch.dict(
+        "sys.modules",
+        {
+            "insightface": MagicMock(),
+            "insightface.app": MagicMock(FaceAnalysis=MagicMock(side_effect=RuntimeError("Init error"))),
+        },
+    ):
         assert fs.get_face_app() is None
         fs._face_app = None
 
@@ -113,8 +142,10 @@ def test_detect_faces_yunet_no_faces():
     mock_detector = MagicMock()
     mock_detector.detect.return_value = (0, None)
 
-    with patch("app.services.face_service.get_face_app", return_value=None), \
-         patch("app.services.face_service.get_yunet_detector", return_value=mock_detector):
+    with (
+        patch("app.services.face_service.get_face_app", return_value=None),
+        patch("app.services.face_service.get_yunet_detector", return_value=mock_detector),
+    ):
         img = np.ones((100, 100, 3), dtype=np.uint8)
         assert detect_faces(img) == []
 
@@ -123,8 +154,10 @@ def test_detect_faces_yunet_exception():
     mock_detector = MagicMock()
     mock_detector.detect.side_effect = RuntimeError("Detector failed")
 
-    with patch("app.services.face_service.get_face_app", return_value=None), \
-         patch("app.services.face_service.get_yunet_detector", return_value=mock_detector):
+    with (
+        patch("app.services.face_service.get_face_app", return_value=None),
+        patch("app.services.face_service.get_yunet_detector", return_value=mock_detector),
+    ):
         img = np.ones((100, 100, 3), dtype=np.uint8)
         assert detect_faces(img) == []
 
@@ -132,18 +165,27 @@ def test_detect_faces_yunet_exception():
 def test_detect_faces_face_app_exception():
     mock_app = MagicMock()
     mock_app.get.side_effect = RuntimeError("Face app failed")
-    with patch("app.services.face_service.get_face_app", return_value=mock_app), \
-         patch("app.services.face_service.get_yunet_detector", return_value=None):
+    with (
+        patch("app.services.face_service.get_face_app", return_value=mock_app),
+        patch("app.services.face_service.get_yunet_detector", return_value=None),
+    ):
         img = np.ones((100, 100, 3), dtype=np.uint8)
         assert detect_faces(img) == []
 
 
 def test_get_face_app_success():
     import app.services.face_service as fs
+
     mock_fa_cls = MagicMock()
     mock_fa_instance = MagicMock()
     mock_fa_cls.return_value = mock_fa_instance
-    with patch.dict("sys.modules", {"insightface": MagicMock(), "insightface.app": MagicMock(FaceAnalysis=mock_fa_cls)}):
+    with patch.dict(
+        "sys.modules",
+        {
+            "insightface": MagicMock(),
+            "insightface.app": MagicMock(FaceAnalysis=mock_fa_cls),
+        },
+    ):
         fs._face_app = None
         app_inst = fs.get_face_app()
         assert app_inst == mock_fa_instance
@@ -154,7 +196,7 @@ def test_get_face_app_success():
 def test_predict_face_demographics_with_face_obj():
     img = np.zeros((100, 100, 3), dtype=np.uint8)
     face_obj = MockFace(age=28.0, gender=1)
-    age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 50, 50], face_obj)
+    age_grp, est_age, _age_conf, gender_str, _gender_conf = predict_face_demographics(img, [10, 10, 50, 50], face_obj)
     assert age_grp == "27 to 30"
     assert est_age == 28.0
     assert gender_str == "male-presentation prediction"
@@ -162,8 +204,10 @@ def test_predict_face_demographics_with_face_obj():
 
 def test_predict_face_demographics_bare_face_obj():
     img = np.ones((100, 100, 3), dtype=np.uint8) * 128
+
     class Bare:
         det_score = 0.90
+
     mock_session = MagicMock()
     mock_input = MagicMock()
     mock_input.name = "data"
@@ -181,10 +225,14 @@ def test_predict_face_demographics_bare_face_obj():
 
 def test_predict_face_demographics_precomputed_face_obj():
     img = np.zeros((100, 100, 3), dtype=np.uint8)
+
     class Precomputed:
         age = 22.0
         gender = 0
-    age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 50, 50], Precomputed())
+
+    age_grp, est_age, _age_conf, gender_str, _gender_conf = predict_face_demographics(
+        img, [10, 10, 50, 50], Precomputed()
+    )
     assert age_grp == "21 to 24"
     assert est_age == 22.0
     assert gender_str == "female-presentation prediction"
@@ -193,21 +241,21 @@ def test_predict_face_demographics_precomputed_face_obj():
 def test_predict_face_demographics_invalid_box():
     img = np.zeros((100, 100, 3), dtype=np.uint8)
     # Zero width/height box
-    age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 10, 10], None)
+    age_grp, _est_age, _age_conf, _gender_str, _gender_conf = predict_face_demographics(img, [10, 10, 10, 10], None)
     assert age_grp == "Not Detected"
 
 
 def test_predict_face_demographics_empty_crop():
     img = np.zeros((100, 100, 3), dtype=np.uint8)
     # Coordinates completely out of bounds
-    age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [200, 200, 300, 300], None)
+    age_grp, _est_age, _age_conf, _gender_str, _gender_conf = predict_face_demographics(img, [200, 200, 300, 300], None)
     assert age_grp == "Not Detected"
 
 
 def test_predict_face_demographics_session_none():
     img = np.ones((100, 100, 3), dtype=np.uint8) * 100
     with patch("app.services.face_service.get_genderage_session", return_value=None):
-        age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
+        age_grp, _est_age, _age_conf, _gender_str, _gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
         assert age_grp == "Not Detected"
 
 
@@ -222,7 +270,7 @@ def test_predict_face_demographics_onnx_success_male():
     mock_session.run.return_value = [np.array([[-1.5, 2.5, 0.28]], dtype=np.float32)]
 
     with patch("app.services.face_service.get_genderage_session", return_value=mock_session):
-        age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
+        age_grp, est_age, _age_conf, gender_str, _gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
         assert age_grp == "27 to 30"
         assert est_age == 28.0
         assert gender_str == "male-presentation prediction"
@@ -238,7 +286,7 @@ def test_predict_face_demographics_onnx_success_female():
     mock_session.run.return_value = [np.array([[3.0, -1.0, 0.22]], dtype=np.float32)]
 
     with patch("app.services.face_service.get_genderage_session", return_value=mock_session):
-        age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
+        age_grp, est_age, _age_conf, gender_str, _gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
         assert age_grp == "21 to 24"
         assert est_age == 22.0
         assert gender_str == "female-presentation prediction"
@@ -254,7 +302,7 @@ def test_predict_face_demographics_onnx_unsure_gender_and_age():
     mock_session.run.return_value = [np.array([[0.0, 0.0, 1.50]], dtype=np.float32)]
 
     with patch("app.services.face_service.get_genderage_session", return_value=mock_session):
-        age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
+        age_grp, _est_age, _age_conf, gender_str, _gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
         assert age_grp == "Unsure"
         assert gender_str == "Unsure"
 
@@ -265,12 +313,12 @@ def test_predict_face_demographics_onnx_exception():
     mock_session.run.side_effect = RuntimeError("Session crash")
 
     with patch("app.services.face_service.get_genderage_session", return_value=mock_session):
-        age_grp, est_age, age_conf, gender_str, gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
+        age_grp, _est_age, _age_conf, _gender_str, _gender_conf = predict_face_demographics(img, [10, 10, 80, 80], None)
         assert age_grp == "Not Detected"
 
 
 def test_sort_faces_reading_order():
-    from app.services.face_service import sort_faces_reading_order, DetectedFace
+    from app.services.face_service import DetectedFace, sort_faces_reading_order
 
     assert sort_faces_reading_order([]) == []
 
@@ -287,9 +335,6 @@ def test_sort_faces_reading_order():
     assert sorted_faces == [face_c, face_b, face_a]
 
     # Test with dict-like face objects
-    dict_faces = [
-        {"bbox": [100, 120, 150, 170]},
-        {"bbox": [20, 20, 60, 60]}
-    ]
+    dict_faces = [{"bbox": [100, 120, 150, 170]}, {"bbox": [20, 20, 60, 60]}]
     sorted_dicts = sort_faces_reading_order(dict_faces, row_threshold_px=50)
     assert sorted_dicts[0]["bbox"] == [20, 20, 60, 60]

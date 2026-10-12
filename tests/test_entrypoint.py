@@ -1,4 +1,5 @@
 """Tests for application root entrypoint app.py."""
+
 import importlib.util
 import runpy
 from unittest.mock import patch

@@ -1,13 +1,12 @@
 import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.core.config import settings
-from app.api.routes import router
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
+from app.api.routes import router
+from app.core.config import settings
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -16,7 +15,7 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title=settings.APP_TITLE,
         version=settings.APP_VERSION,
-        description="Automated profile photo quality, facial presence, and suitability analyzer."
+        description="Automated profile photo quality, facial presence, and suitability analyzer.",
     )
 
     application.add_middleware(

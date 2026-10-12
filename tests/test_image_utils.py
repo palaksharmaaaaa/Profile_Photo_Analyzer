@@ -1,16 +1,18 @@
 import io
-import pytest
-import numpy as np
-from PIL import Image
 from unittest.mock import patch
+
+import numpy as np
+import pytest
+from PIL import Image
+
 from app.services.image_utils import (
-    decode_image_bytes,
-    pil_to_bgr,
+    annotate_faces,
     bgr_to_base64_jpeg,
     clamp_box,
     compute_normalized_box,
+    decode_image_bytes,
+    pil_to_bgr,
     sniff_image_magic_bytes,
-    annotate_faces,
 )
 
 

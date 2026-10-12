@@ -1,13 +1,14 @@
 import logging
 import math
 import re
-from typing import List, Any, Optional, Tuple, Dict
-import numpy as np
+from typing import Any
+
 import cv2
+import numpy as np
 
 from app.core.config import settings
 from app.services.image_utils import clamp_box
-from app.services.model_manager import get_yunet_detector, get_genderage_session
+from app.services.model_manager import get_genderage_session, get_yunet_detector
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +21,14 @@ _face_app = None
 
 class DetectedFace:
     """Standardized representation of a detected face."""
+
     def __init__(
         self,
-        bbox: List[int],
+        bbox: list[int],
         det_score: float = 0.95,
-        kps: Optional[np.ndarray] = None,
-        age: Optional[float] = None,
-        gender: Optional[int] = None
+        kps: np.ndarray | None = None,
+        age: float | None = None,
+        gender: int | None = None,
     ):
         self.bbox = np.array(bbox, dtype=np.float32)
         self.det_score = float(det_score)
@@ -41,12 +43,12 @@ def get_face_app():
     if _face_app is None:
         try:
             from insightface.app import FaceAnalysis
-            providers = ["CPUExecutionProvider"] if settings.FORCE_CPU else ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            logger.info("Initializing InsightFace FaceAnalysis model...")
-            app = FaceAnalysis(
-                name=settings.INSIGHTFACE_MODEL_NAME,
-                providers=providers
+
+            providers = (
+                ["CPUExecutionProvider"] if settings.FORCE_CPU else ["CUDAExecutionProvider", "CPUExecutionProvider"]
             )
+            logger.info("Initializing InsightFace FaceAnalysis model...")
+            app = FaceAnalysis(name=settings.INSIGHTFACE_MODEL_NAME, providers=providers)
             app.prepare(ctx_id=-1 if settings.FORCE_CPU else 0, det_size=settings.DET_SIZE)
             _face_app = app
         except Exception as exc:
@@ -62,12 +64,12 @@ def age_to_three_year_group(age: float) -> str:
     """
     if age < 0:
         return "0 to 3"
-    lower = int(math.floor(age / 3.0)) * 3
+    lower = math.floor(age / 3.0) * 3
     upper = lower + 3
     return f"{lower} to {upper}"
 
 
-def sort_faces_reading_order(faces: List[Any], row_threshold_px: int = 50) -> List[Any]:
+def sort_faces_reading_order(faces: list[Any], row_threshold_px: int = 50) -> list[Any]:
     """
     Sort detected faces in natural reading order: top-to-bottom, left-to-right.
     Groups faces into vertical rows using row_threshold_px, then sorts horizontally.
@@ -75,7 +77,7 @@ def sort_faces_reading_order(faces: List[Any], row_threshold_px: int = 50) -> Li
     if not faces:
         return []
 
-    def sort_key(face: Any) -> Tuple[int, int]:
+    def sort_key(face: Any) -> tuple[int, int]:
         bbox = face.bbox if hasattr(face, "bbox") else face.get("bbox", [0, 0, 0, 0])
         y1 = int(bbox[1])
         x1 = int(bbox[0])
@@ -119,7 +121,7 @@ def possible_minor_age_group(age_label: str) -> bool:
     return False
 
 
-def detect_faces(image_bgr: np.ndarray) -> List[Any]:
+def detect_faces(image_bgr: np.ndarray) -> list[Any]:
     """
     Detect faces in BGR image using lightweight YuNet ONNX model,
     with seamless fallback to InsightFace if configured.
@@ -147,22 +149,25 @@ def detect_faces(image_bgr: np.ndarray) -> List[Any]:
         if raw_faces is None or len(raw_faces) == 0:
             return []
 
-        detected: List[Any] = []
+        detected: list[Any] = []
         for face_row in raw_faces:
-            x = int(round(face_row[0]))
-            y = int(round(face_row[1]))
-            w = int(round(face_row[2]))
-            h = int(round(face_row[3]))
+            x = round(face_row[0])
+            y = round(face_row[1])
+            w = round(face_row[2])
+            h = round(face_row[3])
             score = float(face_row[14])
 
             box = list(clamp_box([x, y, x + w, y + h], width, height))
-            kps = np.array([
-                [face_row[4], face_row[5]],
-                [face_row[6], face_row[7]],
-                [face_row[8], face_row[9]],
-                [face_row[10], face_row[11]],
-                [face_row[12], face_row[13]]
-            ], dtype=np.float32)
+            kps = np.array(
+                [
+                    [face_row[4], face_row[5]],
+                    [face_row[6], face_row[7]],
+                    [face_row[8], face_row[9]],
+                    [face_row[10], face_row[11]],
+                    [face_row[12], face_row[13]],
+                ],
+                dtype=np.float32,
+            )
 
             detected.append(DetectedFace(bbox=box, det_score=score, kps=kps))
         return detected
@@ -171,7 +176,7 @@ def detect_faces(image_bgr: np.ndarray) -> List[Any]:
         return []
 
 
-def extract_face_attributes(face: Any) -> Tuple[str, Optional[float], str]:
+def extract_face_attributes(face: Any) -> tuple[str, float | None, str]:
     """
     Extract estimated age group, confidence, and gender presentation
     for backwards compatibility with existing pipelines.
@@ -186,18 +191,14 @@ def extract_face_attributes(face: Any) -> Tuple[str, Optional[float], str]:
 
     gender_val = getattr(face, "gender", None)
     if gender_val is not None and int(gender_val) in (0, 1):
-        gender_prediction = (
-            "female-presentation prediction"
-            if int(gender_val) == 0
-            else "male-presentation prediction"
-        )
+        gender_prediction = "female-presentation prediction" if int(gender_val) == 0 else "male-presentation prediction"
     else:
         gender_prediction = NOT_AVAILABLE
 
     return estimated_age_group, age_confidence, gender_prediction
 
 
-def _crop_face_with_margin(image_bgr: np.ndarray, face_box: List[int]) -> Optional[np.ndarray]:
+def _crop_face_with_margin(image_bgr: np.ndarray, face_box: list[int]) -> np.ndarray | None:
     """Validate face bounding box and return cropped region with 15% margin."""
     height, width = image_bgr.shape[:2]
     rx1, ry1, rx2, ry2 = [int(v) for v in face_box[:4]]
@@ -214,7 +215,7 @@ def _crop_face_with_margin(image_bgr: np.ndarray, face_box: List[int]) -> Option
     return image_bgr[cy1:cy2, cx1:cx2]
 
 
-def _parse_gender_prediction(gender_logits: np.ndarray) -> Tuple[str, float]:
+def _parse_gender_prediction(gender_logits: np.ndarray) -> tuple[str, float]:
     """Parse softmax probabilities for gender classification."""
     exp_g = np.exp(gender_logits - np.max(gender_logits))
     probs = exp_g / np.sum(exp_g)
@@ -227,7 +228,7 @@ def _parse_gender_prediction(gender_logits: np.ndarray) -> Tuple[str, float]:
     return "male-presentation prediction", round(float(probs[1]), 3)
 
 
-def _parse_age_prediction(raw_age_normalized: float, det_score: float) -> Tuple[str, Optional[float], Optional[float]]:
+def _parse_age_prediction(raw_age_normalized: float, det_score: float) -> tuple[str, float | None, float | None]:
     """Parse continuous normalized age and compute 3-year bucket."""
     raw_age = float(raw_age_normalized * 100)
     if raw_age < 0 or raw_age > 120:
@@ -239,10 +240,8 @@ def _parse_age_prediction(raw_age_normalized: float, det_score: float) -> Tuple[
 
 
 def predict_face_demographics(
-    image_bgr: np.ndarray,
-    face_box: List[int],
-    face_obj: Optional[Any] = None
-) -> Tuple[str, Optional[float], Optional[float], str, Optional[float]]:
+    image_bgr: np.ndarray, face_box: list[int], face_obj: Any | None = None
+) -> tuple[str, float | None, float | None, str, float | None]:
     """
     Predict age group, continuous age, age confidence, gender presentation,
     and gender confidence for a single face using GenderAge ONNX model.
@@ -277,4 +276,3 @@ def predict_face_demographics(
     except Exception as exc:
         logger.warning(f"GenderAge prediction error: {exc}")
         return NOT_DETECTED, None, None, NOT_DETECTED, None
-
