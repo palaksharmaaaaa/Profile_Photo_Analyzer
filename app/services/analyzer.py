@@ -169,6 +169,17 @@ def _entity_item(entity: dict[str, Any], verdict: dict[str, Any]) -> tuple[dict[
             },
             BUCKET_UNSURE,
         )
+    if (entity["confidence"] or 0.0) < settings.ANIMAL_DETECTOR_ONLY_MIN_CONF:
+        # A weak COCO "dog/cat" on a box the verifier could not confirm is often a face-filling false positive.
+        return (
+            {
+                "label": f"Possible {entity['label'].lower()} (detector only, low confidence)",
+                "reason": "Only the object detector reported this region, with low confidence, and it was not verified.",
+                "detection_confidence": entity["confidence"],
+                "box_xyxy": entity["box_xyxy"],
+            },
+            BUCKET_UNSURE,
+        )
     return detector_only, BUCKET_OTHER
 
 

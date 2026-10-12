@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     FACE_NMS_IOU: float = 0.40
     SMALL_IMAGE_UPSCALE_SIDE: int = 1000  # extra 2x detection pass when the longest side is below this
     ANIMAL_CONF_THRESHOLD: float = 0.45
+    ANIMAL_DETECTOR_ONLY_MIN_CONF: float = 0.65  # unverified animal boxes below this are listed as Unsure, not Dog/Cat
     ANIME_FACE_CONF_THRESHOLD: float = 0.35
 
     # ---- Semantic (SigLIP2) verification ----------------------------------------
@@ -41,7 +42,9 @@ class Settings(BaseSettings):
     HUMAN_MIN_MARGIN: float = 0.25  # ...and when it beats the runner-up class by this much
     NONHUMAN_MAX_HUMAN_PROB: float = 0.25  # below this human share a crop is declared non-human
     NOT_FACE_MIN_PROB: float = 0.50
-    FACE_CROP_MARGIN: float = 0.15
+    # Crop margin around a face box for verification. Measured on 196 real faces: 0.15 verified 160/160 random but
+    # 0/36 hard ones; 0.30 verified 160/160 and 13/36; wider margins lost faces. Tuned on real faces only.
+    FACE_CROP_MARGIN: float = 0.30
     IMAGE_TYPE_MIN_MASS: float = 0.60  # share of probability mass a group needs for a confident image type
 
     # ---- Age / gender -------------------------------------------------------------

@@ -89,12 +89,16 @@ def main() -> None:
     parser.add_argument("folder", type=Path)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--sample", type=int, help="analyse a random sample of this many images")
+    parser.add_argument("--list", type=Path, help="text file of image file names (one per line) to analyse")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--threads", type=int, default=2, help="ONNX threads per worker")
     args = parser.parse_args()
 
     files = sorted(p for p in args.folder.iterdir() if p.suffix.lower() in EXTENSIONS)
+    if args.list:
+        wanted = set(args.list.read_text(encoding="utf-8").split())
+        files = [p for p in files if p.name in wanted]
     if args.sample and args.sample < len(files):
         files = sorted(random.Random(args.seed).sample(files, args.sample))
     print(f"analysing {len(files)} images with {args.workers} workers", flush=True)

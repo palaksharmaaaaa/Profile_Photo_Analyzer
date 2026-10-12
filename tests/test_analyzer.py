@@ -465,3 +465,11 @@ def test_same_region_reported_by_yunet_and_anime_detector_is_listed_once(h):
     h.default_verdict = UNSURE
     result = h.run()
     assert result["unsure_face_count"] == 1
+
+
+def test_weak_detector_only_animal_is_unsure_not_confirmed():
+    weak = entity([0, 0, 10, 10], label="Dog", confidence=0.52)
+    item, bucket = az._entity_item(weak, UNSURE)
+    assert bucket == az.BUCKET_UNSURE and "low confidence" in item["label"]
+    assert az._entity_item(entity([0, 0, 10, 10], label="Dog", confidence=0.9), UNSURE)[1] == az.BUCKET_OTHER
+    assert az._entity_item({**weak, "confidence": None}, UNSURE)[1] == az.BUCKET_UNSURE
