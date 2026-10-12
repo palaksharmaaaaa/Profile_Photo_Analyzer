@@ -42,6 +42,7 @@ class ModelSpec:
     url: str | None = None
     sha256: str | None = None
     commercial_use_cleared: bool = True  # False: the weights' licence or training data do not clear commercial use
+    input_shape: tuple[int, ...] = (1, 3, 640, 640)  # used for the warm-up when the model declares dynamic dimensions
 
 
 class ModelStatus(TypedDict):
@@ -92,6 +93,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         license="Apache-2.0 (Megvii YOLOX)",
         url="https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx",
         sha256="c5c2d13e59ae883e6af3b45daea64af4833a4951c92d116ec270d9ddbe998063",
+        input_shape=(1, 3, 640, 640),
     ),
     "siglip_vision": ModelSpec(
         key="siglip_vision",
@@ -99,6 +101,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         display_name="SigLIP2 Base/16-224 vision tower (INT8)",
         role="real-human vs non-human face and image-type verification",
         license="Apache-2.0 (Google SigLIP2)",
+        input_shape=(1, 3, 224, 224),
     ),
     "scrfd": ModelSpec(
         key="scrfd",
@@ -115,6 +118,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         role="age regression and gender classification",
         license="Apache-2.0 per model card; training data only partly disclosed (see NOTICE.md)",
         commercial_use_cleared=False,
+        input_shape=(1, 6, 384, 384),
     ),
 }
 
@@ -354,12 +358,12 @@ def get_yunet_detector(width: int = 640, height: int = 640) -> cv2.FaceDetectorY
             return None
 
 
-def _dummy_input(session: ort.InferenceSession) -> dict[str, np.ndarray]:
-    """Zero inputs for every input of a session (a dynamic batch becomes 1, other dynamic sizes 640)."""
+def _dummy_input(session: ort.InferenceSession, fallback_shape: tuple[int, ...]) -> dict[str, np.ndarray]:
+    """Zero inputs for every input of a session; a dimension the model leaves open is taken from ``fallback_shape``."""
     feeds: dict[str, np.ndarray] = {}
     for model_input in session.get_inputs():
         shape = [
-            dim if isinstance(dim, int) and dim > 0 else (1 if axis == 0 else WARM_UP_SIDE)
+            dim if isinstance(dim, int) and dim > 0 else fallback_shape[axis] if axis < len(fallback_shape) else 1
             for axis, dim in enumerate(model_input.shape)
         ]
         dtype = np.int64 if "int64" in model_input.type else np.float32
@@ -383,7 +387,7 @@ def warm_up() -> dict[str, WarmUp]:
             continue
         started = time.perf_counter()
         try:
-            session.run(None, _dummy_input(session))
+            session.run(None, _dummy_input(session, MODEL_SPECS[key].input_shape))
             elapsed: float | None = round((time.perf_counter() - started) * 1000, 1)
         except Exception as exc:
             logger.warning("Warm-up inference of %s failed: %s", key, exc)

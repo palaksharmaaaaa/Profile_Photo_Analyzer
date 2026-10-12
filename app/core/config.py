@@ -58,7 +58,9 @@ class VerificationSettings(BaseModel):
 
     temperature: float = 100.0  # sharpness of that softmax
     crop_margin: float = 0.30  # context around the face box; 0.30 verified 13 more of 36 hard real faces than 0.15
-    human_min_prob: float = 0.60  # a crop is a verified real human face if "human" has at least this share...
+    # Measured on 1,200 portraits and 560 paintings, sketches, cartoons, anime, pets and birds: at 0.70 a real portrait is
+    # verified 96.3 % of the time and 2.5 % of the non-human images are verified as human (0.60: 98.1 % and 6.3 %).
+    human_min_prob: float = 0.70  # a crop is a verified real human face if "human" has at least this share...
     human_min_margin: float = 0.25  # ...and leads the runner-up class by at least this much
     nonhuman_max_human_prob: float = 0.25  # a crop is non-human if the human share is below this
     not_face_min_prob: float = 0.50  # share of "not a face" needed to discard a candidate
@@ -70,10 +72,18 @@ class AgeSettings(BaseModel):
 
     # Every face is shown to MiVOLO in several views (crop margin, mirrored). Their disagreement measures uncertainty.
     views: tuple[tuple[float, bool], ...] = ((0.0, False), (0.0, True), (0.15, False))
-    # Average age error of MiVOLO over 8 public datasets in an independent benchmark (arXiv 2602.07815). It sets the
-    # width of the reported age range.
-    model_mae_years: float = 5.1
-    sigma_per_mae: float = 1.25  # Gaussian sigma = this x MAE
+    # Spread of MiVOLO's age error by estimated age, as (below this age, years). Measured by scripts/evaluate.py on 1,175
+    # FairFace faces labelled with an age bin (docs/EVALUATION_AND_FAIRNESS.md): the bin's own width is taken out, which
+    # assumes ages are spread evenly inside a bin. It sets the width of the reported age range.
+    error_by_age: tuple[tuple[float, float], ...] = (
+        (10.0, 7.15),
+        (20.0, 7.28),
+        (30.0, 4.89),
+        (40.0, 6.46),
+        (50.0, 8.56),
+        (60.0, 6.82),
+        (200.0, 6.62),
+    )
     interval_z: float = 1.2816  # z-score of the 80% interval
     unsure_view_std: float = 6.0  # the age is Unsure if the views differ by more than this many years (std)
     min_credible: float = 1.0  # estimates outside this range are Unsure
@@ -119,6 +129,13 @@ class JobSettings(BaseModel):
     result_ttl_seconds: float = 600  # finished jobs are forgotten after this long
 
 
+class ServerSettings(BaseModel):
+    """Where ``python -m app`` listens. One process serves the models; scale out with several instances."""
+
+    host: str = "127.0.0.1"  # use 0.0.0.0 inside a container
+    port: int = 8000
+
+
 class SecuritySettings(BaseModel):
     """Authentication, abuse controls and CORS."""
 
@@ -151,6 +168,7 @@ class Settings(BaseSettings):
     quality: QualitySettings = QualitySettings()
     models: ModelSettings = ModelSettings()
     jobs: JobSettings = JobSettings()
+    server: ServerSettings = ServerSettings()
     security: SecuritySettings = SecuritySettings()
 
     @model_validator(mode="after")

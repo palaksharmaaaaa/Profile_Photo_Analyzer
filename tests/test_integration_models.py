@@ -79,6 +79,33 @@ def test_label_bank_matches_the_vision_model_dimension():
     assert session is not None
 
 
+def test_warm_up_runs_one_inference_on_every_real_model():
+    from app.services.model_manager import MODEL_SPECS, warm_up
+
+    report = warm_up()
+    assert set(report) == {key for key in MODEL_SPECS}
+    assert all(entry["loaded"] and entry["warm_up_ms"] >= 0 for entry in report.values())
+    assert report["mivolo"]["providers"] == ["CPUExecutionProvider"]
+    assert report["yunet"]["providers"] == ["OpenCV DNN"]
+
+
+def test_parallel_and_sequential_inference_give_the_same_answer(test_image_rgb):
+    from app.core.config import settings
+
+    def run():
+        return analyze_profile_photo_image(test_image_rgb, "p.jpg", render_annotation=False)
+
+    parallel_result = run()
+    settings.models.parallel_inference = False
+    try:
+        sequential_result = run()
+    finally:
+        settings.models.parallel_inference = True
+    for result in (parallel_result, sequential_result):
+        result["diagnostics"]["processing_time_ms"] = 0
+    assert parallel_result == sequential_result
+
+
 @pytest.mark.skipif(not os.environ.get("PPA_TEST_IMAGES_DIR"), reason="PPA_TEST_IMAGES_DIR not set")
 def test_user_images_produce_well_formed_honest_results():
     folder = Path(os.environ["PPA_TEST_IMAGES_DIR"])

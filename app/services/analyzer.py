@@ -29,9 +29,11 @@ from app.services.classifier_service import (
     VERDICT_NON_HUMAN,
     VERDICT_NOT_FACE,
     VERDICT_UNAVAILABLE,
-    classify_boxes,
     classify_image_type,
     detect_entities_and_persons,
+)
+from app.services.classifier_service import (
+    classify_boxes as classify_boxes,  # re-exported: the evaluation tooling wraps it
 )
 from app.services.face_service import DetectedFace, detect_faces, predict_face_demographics
 from app.services.image_utils import (

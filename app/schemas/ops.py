@@ -21,6 +21,16 @@ class Licensing(BaseModel):
     blocking_models: list[str] = Field(default_factory=list)
 
 
+class Limits(BaseModel):
+    """What the service accepts, so a client can check a photo before it uploads it."""
+
+    max_upload_bytes: int
+    max_pixels: int
+    max_dimension: int
+    working_max_side: int
+    formats: list[str]
+
+
 class HealthResponse(BaseModel):
     status: str  # ready or degraded
     version: str

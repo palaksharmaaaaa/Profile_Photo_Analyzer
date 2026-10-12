@@ -1,0 +1,2 @@
+# Only for scripts/fetch_eval_data.py (reads the FairFace parquet file).
+pyarrow>=15.0.0

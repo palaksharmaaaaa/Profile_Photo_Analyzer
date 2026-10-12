@@ -29,16 +29,19 @@ import sys
 import urllib.request
 import zipfile
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def _load_label_prompts():
+def _load_label_prompts() -> ModuleType:
     """Load the prompt taxonomy by file path so the build needs none of the web-service dependencies."""
     path = ROOT / "app" / "services" / "label_prompts.py"
     spec = importlib.util.spec_from_file_location("label_prompts", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load the prompt taxonomy from {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules["label_prompts"] = module  # dataclasses resolve their module through sys.modules
     spec.loader.exec_module(module)
@@ -136,6 +139,8 @@ def build_mivolo(src: Path, dst: Path) -> dict[str, float]:
     for _ in range(3):
         x = rng.normal(0.0, 1.0, size=(1, 6, 384, 384)).astype(np.float32)
         age, head = session.run(["age", "head"], {"faces_bodies": x})
+        if head.shape != (1, 3):
+            raise SystemExit(f"The exposed tensor has shape {head.shape}, not (1, 3): the upstream export has changed.")
         worst = max(worst, abs(float(age[0, 0]) - float(head[0, 2] * 122.0 + 61.0)))
     print(f"  age from original output vs from exposed head: max difference {worst:.2e} years")
     if worst > 1e-3:
@@ -162,7 +167,7 @@ def embed_prompts(text_model: Path, tokenizer_path: Path, prompts: list[str]) ->
     session = ort.InferenceSession(str(text_model), providers=["CPUExecutionProvider"])
     ids = np.array([e.ids for e in tok.encode_batch([p.lower() for p in prompts])], dtype=np.int64)
     pooled = session.run(["pooler_output"], {"input_ids": ids})[0]
-    return pooled / np.maximum(np.linalg.norm(pooled, axis=1, keepdims=True), 1e-12)
+    return np.asarray(pooled / np.maximum(np.linalg.norm(pooled, axis=1, keepdims=True), 1e-12))
 
 
 def build_bank(text_model: Path, tokenizer_path: Path, out: Path) -> None:
@@ -179,7 +184,14 @@ def build_bank(text_model: Path, tokenizer_path: Path, out: Path) -> None:
         arrays[f"{taxonomy}_names"] = np.array([c.name for c in classes])
         arrays[f"{taxonomy}_vectors"] = np.stack(vectors).astype(np.float32)
     meta = {"prompts": prompt_templates(), "tokens": TEXT_TOKENS, "text_model": "siglip2-base-patch16-224 (int8)"}
-    np.savez(out, meta=np.array(json.dumps(meta)), **arrays)
+    np.savez(
+        out,
+        meta=np.array(json.dumps(meta)),
+        face_names=arrays["face_names"],
+        face_vectors=arrays["face_vectors"],
+        image_names=arrays["image_names"],
+        image_vectors=arrays["image_vectors"],
+    )
 
 
 def main() -> None:

@@ -30,9 +30,9 @@ from app.schemas.analysis import (
     JobStatus,
     StageEventModel,
 )
-from app.schemas.ops import HealthResponse, ReadyResponse
+from app.schemas.ops import HealthResponse, Limits, ReadyResponse
 from app.services.analyzer import analyze_profile_photo_image
-from app.services.image_utils import DecodedImage, InvalidImageError, decode_image_bytes
+from app.services.image_utils import SUPPORTED_MIME_TYPES, DecodedImage, InvalidImageError, decode_image_bytes
 from app.services.jobs import Job, QueueFull, get_job_manager
 from app.services.model_manager import check_models_status, commercial_use_blockers
 from app.services.types import AnalysisResult
@@ -245,6 +245,18 @@ async def job_events(job_id: str) -> StreamingResponse:
         _event_stream(job),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@v1.get("/limits", response_model=Limits, summary="What the service accepts")
+def limits() -> Limits:
+    upload = settings.upload
+    return Limits(
+        max_upload_bytes=upload.max_bytes,
+        max_pixels=upload.max_pixels,
+        max_dimension=upload.max_dimension,
+        working_max_side=upload.working_max_side,
+        formats=list(SUPPORTED_MIME_TYPES),
     )
 
 

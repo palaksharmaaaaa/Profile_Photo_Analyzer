@@ -45,6 +45,20 @@ def test_sniff_recognises_real_formats(payload, expected):
     assert sniff_image_magic_bytes(payload) == expected
 
 
+def test_the_advertised_formats_are_exactly_the_ones_that_can_be_recognised():
+    from app.services.image_utils import SUPPORTED_MIME_TYPES
+
+    samples = [
+        b"\xff\xd8\xff\xe0abc",
+        b"\x89PNG\r\n\x1a\nxxxx",
+        b"RIFF\x00\x00\x00\x00WEBPVP8 ",
+        b"GIF89a....",
+        b"II*\x00....",
+        b"BM......",
+    ]
+    assert {sniff_image_magic_bytes(sample) for sample in samples} == set(SUPPORTED_MIME_TYPES)
+
+
 @pytest.mark.parametrize("payload", [b"", b"abc", b"NOT_AN_IMAGE_AT_ALL"])
 def test_sniff_rejects_unknown_or_short(payload):
     with pytest.raises(ValueError):

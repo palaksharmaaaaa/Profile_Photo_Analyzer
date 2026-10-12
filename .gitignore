@@ -33,3 +33,6 @@ models/*.onnx
 # Scratch space for one-time model builds
 .model_build/
 .eval_data/
+
+node_modules/
+coverage-js/

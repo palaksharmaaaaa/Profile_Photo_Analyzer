@@ -20,11 +20,11 @@ filterwarnings = [
 
 [tool.mypy]
 python_version = "3.14"
-files = ["app"]
+files = ["app", "evaluation", "scripts"]
 plugins = ["pydantic.mypy"]
 strict = true
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["onnxruntime", "onnxruntime.*"]
-ignore_missing_imports = true  # onnxruntime ships no type information
+module = ["onnxruntime", "onnxruntime.*", "pyarrow", "pyarrow.*", "onnx", "onnx.*", "tokenizers", "tokenizers.*"]
+ignore_missing_imports = true  # these libraries ship no type information

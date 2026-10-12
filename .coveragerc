@@ -1,6 +1,9 @@
 [run]
 branch = True
-source = app
+source =
+    app
+    evaluation
+    scripts
 omit =
     tests/*
     .venv/*

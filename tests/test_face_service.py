@@ -301,6 +301,22 @@ def test_minor_probability_rises_near_the_adult_boundary():
     assert demo.p_under_18 > settings.age.minor_risk_probability
 
 
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    [(0.0, 7.15), (9.9, 7.15), (10.0, 7.28), (25.0, 4.89), (59.9, 6.82), (60.0, 6.62), (500.0, 6.62)],
+)
+def test_the_model_error_is_looked_up_by_age_band(age, expected):
+    assert fs.model_error_years(age) == expected
+
+
+def test_a_wider_error_widens_the_age_range(monkeypatch):
+    narrow = predict([head(40.0)])
+    monkeypatch.setattr(settings.age, "error_by_age", ((200.0, 12.0),))
+    wide = predict([head(40.0)])
+    assert wide.age_range[1] - wide.age_range[0] > narrow.age_range[1] - narrow.age_range[0]
+    assert wide.age_group_probability < narrow.age_group_probability
+
+
 def test_age_is_unsure_when_views_disagree_but_minor_probability_is_kept():
     demo = predict([head(10.0), head(30.0), head(12.0)])
     assert demo.age_status == fs.UNSURE

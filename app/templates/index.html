@@ -10,6 +10,9 @@
     <link rel="stylesheet" href="/static/analyzer.css">
 </head>
 <body>
+<noscript>
+    <p class="noscript">This page needs JavaScript to upload a photo and show the result. The API at <code>/docs</code> works without it.</p>
+</noscript>
 <main class="container">
 
     <!-- Header ------------------------------------------------------------------------------------- -->
@@ -40,7 +43,7 @@
                 </span>
                 <img class="upload-thumb hidden" id="drop-preview" alt="Selected photo">
                 <span class="upload-title" id="upload-title-text">Drop a photo here, or <span class="link">browse</span></span>
-                <span class="upload-hint" id="upload-hint">JPG, PNG, WEBP, GIF, TIFF or BMP &middot; up to 10 MB &middot; checked by file contents</span>
+                <span class="upload-hint" id="upload-hint">JPG, PNG, WEBP, GIF, TIFF or BMP &middot; checked by file contents</span>
             </label>
 
             <div class="button-row">
@@ -53,7 +56,7 @@
             <li class="step" data-step="1">
                 <div class="step-head"><span class="step-number">01</span><span class="pill pill-pending">Pending</span></div>
                 <div class="step-title">File check</div>
-                <div class="step-detail">Real image, within 10 MB.</div>
+                <div class="step-detail">A real image within the size limit.</div>
             </li>
             <li class="step" data-step="2">
                 <div class="step-head"><span class="step-number">02</span><span class="pill pill-pending">Pending</span></div>
@@ -177,6 +180,6 @@
     </footer>
 
 </main>
-<script src="/static/analyzer.js"></script>
+<script type="module" src="/static/js/main.js"></script>
 </body>
 </html>

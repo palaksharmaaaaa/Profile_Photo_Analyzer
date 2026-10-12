@@ -234,12 +234,14 @@ class WarmSession(FakeSession):
         return ["CPUExecutionProvider"]
 
 
-def test_dummy_inputs_replace_dynamic_dimensions():
+def test_dummy_inputs_take_open_dimensions_from_the_models_declared_shape():
     session = WarmSession([Meta("pixels", ["batch", 3, "h", 224]), Meta("ids", [1, 8], "tensor(int64)")])
-    feeds = model_manager._dummy_input(session)
-    assert feeds["pixels"].shape == (1, 3, model_manager.WARM_UP_SIDE, 224)
+    feeds = model_manager._dummy_input(session, (1, 3, 128, 999))
+    assert feeds["pixels"].shape == (1, 3, 128, 224)
     assert feeds["pixels"].dtype == np.float32
     assert feeds["ids"].dtype == np.int64
+    extra = WarmSession([Meta("x", ["a", "b", "c"])])
+    assert model_manager._dummy_input(extra, (2,))["x"].shape == (2, 1, 1)  # beyond the declared shape: 1
 
 
 def test_warm_up_reports_every_model(monkeypatch):

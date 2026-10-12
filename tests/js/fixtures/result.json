@@ -1,0 +1,166 @@
+{
+  "status": "NON_HUMAN_FACE_PRESENT",
+  "accepted": false,
+  "reason": "One real human face was found, but the image also contains 1 non-human face(s): Cat.",
+  "summary": "1 real human face(s); 1 non-human face(s): 1 x Cat; 1 unverified candidate(s).",
+  "real_human_face_count": 1,
+  "other_face_count": 1,
+  "unsure_face_count": 1,
+  "human_faces": [
+    {
+      "face_id": 1,
+      "box_xyxy": [
+        200,
+        200,
+        400,
+        400
+      ],
+      "box_percent": [
+        33.33,
+        33.33,
+        66.67,
+        66.67
+      ],
+      "detection_confidence": 0.95,
+      "verification_confidence": 0.9,
+      "quality": {
+        "status": "LIKELY_COMPLETE",
+        "reason": "The face is well-framed, sharp, frontal, and all key facial landmarks are visible.",
+        "touches_image_edge": false,
+        "sharpness": 2192.79,
+        "landmarks_available": true,
+        "landmarks_inside_image": true,
+        "brightness": 124.2,
+        "face_area_ratio": 0.1111,
+        "yaw_ratio": 0.0,
+        "min_side_px": 200,
+        "usable_for_demographics": true,
+        "demographics_caveat": null
+      },
+      "gender": "Female",
+      "gender_confidence": 0.97,
+      "age_group": "33 to 36",
+      "age_status": "Estimated",
+      "estimated_age": 34.0,
+      "age_range": [
+        26.0,
+        42.0
+      ],
+      "age_group_probability": 0.19,
+      "p_under_18": 0.0,
+      "possible_minor": false,
+      "notes": []
+    }
+  ],
+  "other_faces": [
+    {
+      "face_type": "animal",
+      "label": "Cat",
+      "confidence": 0.9,
+      "box_xyxy": [
+        20,
+        100,
+        120,
+        200
+      ],
+      "source": "YOLOX-S (COCO)",
+      "verified_by": "SigLIP2",
+      "face_id": 1,
+      "box_percent": [
+        3.33,
+        16.67,
+        20.0,
+        33.33
+      ]
+    }
+  ],
+  "unsure_faces": [
+    {
+      "label": "Unsure (closest: Painting / Sketch)",
+      "reason": "The model could not tell with enough certainty whether this is a real human face.",
+      "detection_confidence": 0.95,
+      "box_xyxy": [
+        450,
+        450,
+        550,
+        550
+      ],
+      "face_id": 1,
+      "box_percent": [
+        75.0,
+        75.0,
+        91.67,
+        91.67
+      ]
+    }
+  ],
+  "image_info": {
+    "has_information": true,
+    "entropy": 1.154,
+    "std_dev": 5.234,
+    "laplacian_var": 358.577,
+    "reason": "Image contains valid visual entropy and information."
+  },
+  "image_type": {
+    "status": "PHOTO_LIKE",
+    "label": "Real Photo",
+    "photo_share": 0.98,
+    "synthetic_share": 0.02,
+    "predictions": [],
+    "model": "SigLIP2 test",
+    "reason": "test reason"
+  },
+  "pipeline_steps": [
+    {
+      "step_id": "validate",
+      "step_number": 1,
+      "title": "File check",
+      "status": "completed",
+      "detail": "The file is a valid image within the 10 MB limit."
+    },
+    {
+      "step_id": "information",
+      "step_number": 2,
+      "title": "Visual information",
+      "status": "completed",
+      "detail": "The image has visual content (entropy 1.15)."
+    },
+    {
+      "step_id": "detection",
+      "step_number": 3,
+      "title": "Faces: detection and verification",
+      "status": "completed",
+      "detail": "1 real human face(s), 1 non-human face(s), 1 unverified candidate(s)."
+    },
+    {
+      "step_id": "demographics",
+      "step_number": 4,
+      "title": "Age and gender",
+      "status": "completed",
+      "detail": "Age (3-year brackets) and gender estimated for every verified real human face."
+    }
+  ],
+  "diagnostics": {
+    "processing_time_ms": 327.5,
+    "image_width": 600,
+    "image_height": 600,
+    "original_width": null,
+    "original_height": null,
+    "exif_orientation_applied": false,
+    "downscaled_for_analysis": false,
+    "file_format": "image/jpeg",
+    "rejected_candidate_count": 0,
+    "models_executed": [
+      "Image information check (entropy and variance)",
+      "SigLIP2 test",
+      "Face detector test",
+      "Entity detector test",
+      "SigLIP2 Base/16-224 vision tower (INT8)",
+      "Age model test"
+    ]
+  },
+  "annotated_image": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=",
+  "filename": "p.jpg",
+  "legend": "Green boxes are verified real human faces, purple boxes are non-human faces, orange boxes could not be verified.",
+  "disclaimer": "Age and gender are appearance-based estimates; the typical age error is several years. Keep a separate age-verification process for any strict 18+ policy."
+}

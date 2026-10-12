@@ -21,7 +21,7 @@ from app.core.logging import request_id_var
 
 logger = logging.getLogger(__name__)
 
-PUBLIC_PATHS = frozenset({"/", "/health", "/ready", "/docs", "/openapi.json", "/redoc"})
+PUBLIC_PATHS = frozenset({"/", "/health", "/ready", "/v1/limits", "/docs", "/openapi.json", "/redoc"})
 STATIC_PREFIX = "/static/"  # the page's own stylesheet and script: never authenticated or rate limited
 UNLIMITED_PATHS = frozenset({"/metrics"})  # authenticated, but a scraper must not be rate limited
 GUARDED_PATHS = frozenset({"/v1/analyze-profile-photo", "/analyze-profile-photo"})  # one request = one analysis

@@ -32,7 +32,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any, Protocol
 
 API = "https://datasets-server.huggingface.co"
 HEADERS = {"User-Agent": "ProfilePhotoAnalyzer-eval/1.0"}
@@ -52,34 +54,50 @@ NON_HUMAN_SETS = {
     "paintings": ("huggan/wikiart", "default", "train", ("genre", 6)),  # genre 6 = portrait
     "sketches": ("a573p/Face-Sketches40", "default", "train", None),
 }
+
+
+class RowWriter(Protocol):
+    """What the fetch functions need from a ``csv.writer``."""
+
+    def writerow(self, row: Sequence[object], /) -> object: ...
+
+
+DatasetSpec = tuple[str, str, str, tuple[str, int] | None]
 LABELS = ["file", "set", "expectation", "age", "gender", "race"]
+
+
+RETRYABLE_STATUS = (429, 500, 502, 503, 504)
+MAX_RETRIES = 6
 
 
 def _open(url: str) -> bytes:
     """GET with a patient retry: 429 and 5xx answers are waited out with a growing pause."""
-    for attempt in range(7):
+    attempt = 0
+    while True:
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=HEADERS), timeout=120) as response:
-                data = response.read()
+                data: bytes = response.read()
             time.sleep(PAUSE_SECONDS)
             return data
         except urllib.error.HTTPError as exc:
-            if exc.code not in (429, 500, 502, 503, 504) or attempt == 6:
+            if exc.code not in RETRYABLE_STATUS or attempt >= MAX_RETRIES:
                 raise
         except TimeoutError, urllib.error.URLError:
-            if attempt == 6:
+            if attempt >= MAX_RETRIES:
                 raise
         time.sleep(5 * 2**attempt)
-    raise RuntimeError("unreachable")
+        attempt += 1
 
 
-def _json(url: str) -> dict:
-    return json.loads(_open(url))
+def _json(url: str) -> dict[str, Any]:
+    parsed: dict[str, Any] = json.loads(_open(url))
+    return parsed
 
 
-def _rows(dataset: str, config: str, split: str, offset: int, length: int) -> list[dict]:
+def _rows(dataset: str, config: str, split: str, offset: int, length: int) -> list[dict[str, Any]]:
     query = {"dataset": dataset, "config": config, "split": split, "offset": offset, "length": length}
-    return _json(f"{API}/rows?{urllib.parse.urlencode(query)}")["rows"]
+    rows: list[dict[str, Any]] = _json(f"{API}/rows?{urllib.parse.urlencode(query)}")["rows"]
+    return rows
 
 
 def _total(dataset: str, config: str) -> int:
@@ -87,7 +105,7 @@ def _total(dataset: str, config: str) -> int:
     return int(size["size"]["config"]["num_rows"])
 
 
-def fetch_fairface(out: Path, count: int, rng: random.Random, writer: csv.writer, known: set[str]) -> None:
+def fetch_fairface(out: Path, count: int, rng: random.Random, writer: RowWriter, known: set[str]) -> None:
     import pyarrow.parquet as pq
 
     folder = out / "fairface"
@@ -115,7 +133,7 @@ def fetch_fairface(out: Path, count: int, rng: random.Random, writer: csv.writer
 
 
 def fetch_non_human(
-    out: Path, name: str, spec: tuple, count: int, rng: random.Random, writer: csv.writer, known: set[str]
+    out: Path, name: str, spec: DatasetSpec, count: int, rng: random.Random, writer: RowWriter, known: set[str]
 ) -> None:
     dataset, config, split, row_filter = spec
     total = _total(dataset, config)
@@ -127,7 +145,12 @@ def fetch_non_human(
     for offset in windows:
         if have >= count:
             break
-        for row in _rows(dataset, config, split, offset, WINDOW):
+        try:
+            rows = _rows(dataset, config, split, offset, WINDOW)
+        except urllib.error.HTTPError as exc:  # a few windows of a dataset can be unavailable: take the next one
+            print(f"  {name}: skipping rows {offset}-{offset + WINDOW} ({exc.code})", flush=True)
+            continue
+        for row in rows:
             if row_filter and row["row"][row_filter[0]] != row_filter[1]:
                 continue
             file = f"{name}/{name}_{row['row_idx']:06d}.jpg"

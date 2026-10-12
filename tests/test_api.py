@@ -84,13 +84,22 @@ def test_starting_without_the_page_fails_loudly(monkeypatch, tmp_path):
 def test_page_assets_are_served_and_never_need_the_api_key(monkeypatch):
     monkeypatch.setattr(settings.security, "api_key", "secret-test-token")
     assert client.get("/").status_code == 200
-    for asset, kind in (("analyzer.css", "text/css"), ("analyzer.js", "javascript")):
+    for asset, kind in (("analyzer.css", "text/css"), ("js/main.js", "javascript"), ("js/app.js", "javascript")):
         response = client.get(f"/static/{asset}")
         assert response.status_code == 200
         assert kind in response.headers["content-type"]
 
 
 # ---- health, readiness, metrics -------------------------------------------------------------------------------------
+
+
+def test_limits_tell_a_client_what_the_service_accepts(monkeypatch):
+    monkeypatch.setattr(settings.security, "api_key", "secret-test-token")  # public: the page needs it before any call
+    body = client.get("/v1/limits").json()
+    assert body["max_upload_bytes"] == settings.upload.max_bytes
+    assert body["max_dimension"] == settings.upload.max_dimension
+    assert "image/jpeg" in body["formats"]
+    assert {"image/jpeg", "image/png", "image/webp", "image/gif", "image/tiff", "image/bmp"} == set(body["formats"])
 
 
 def test_health_reports_every_model_and_degrades_honestly():
@@ -442,7 +451,7 @@ def test_settings_read_nested_environment_variables(monkeypatch):
     loaded = Settings()
     assert loaded.age.minor_risk_probability == 0.33
     assert loaded.environment == "staging"
-    assert loaded.age.model_mae_years == 5.1  # the rest of the group keeps its defaults
+    assert loaded.age.gender_surety == 0.80  # the rest of the group keeps its defaults
 
 
 # ---- jobs ----------------------------------------------------------------------------------------------------------
@@ -588,6 +597,22 @@ def test_module_entrypoint_launches_uvicorn():
     run.assert_called_once()
     assert run.call_args.args[0] == "app.main:app"
     assert run.call_args.kwargs["reload"] is False
+    assert (run.call_args.kwargs["host"], run.call_args.kwargs["port"]) == ("127.0.0.1", 8000)
+    assert run.call_args.kwargs["log_config"] is None
+
+
+def test_the_listening_address_comes_from_the_settings(monkeypatch):
+    import app.__main__ as entry
+
+    monkeypatch.setattr(settings.server, "host", "0.0.0.0")
+    monkeypatch.setattr(settings.server, "port", 9100)
+    with patch("uvicorn.run") as run:
+        entry.main(reload=True)
+    assert (run.call_args.kwargs["host"], run.call_args.kwargs["port"], run.call_args.kwargs["reload"]) == (
+        "0.0.0.0",
+        9100,
+        True,
+    )
 
 
 def test_package_exposes_single_version():

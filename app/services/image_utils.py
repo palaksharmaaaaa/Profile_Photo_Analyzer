@@ -10,6 +10,14 @@ from PIL import Image, ImageOps
 from app.core.config import settings
 
 BoxItem = tuple[list[int], str, tuple[int, int, int]]
+SUPPORTED_MIME_TYPES = (
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "image/tiff",
+    "image/bmp",
+)  # what ``sniff_image_magic_bytes`` can recognise
 
 
 class InvalidImageError(ValueError):

@@ -274,11 +274,17 @@ def _build_views(image_bgr: np.ndarray, face_box: list[int], body_box: list[int]
     return views
 
 
+def model_error_years(age: float) -> float:
+    """The measured spread of the age model's error at an estimated age (see ``AgeSettings.error_by_age``)."""
+    table = settings.age.error_by_age
+    return next((years for below, years in table if age < below), table[-1][1])
+
+
 def _estimate_age(ages: np.ndarray, result: Demographics) -> float:
     """Fill the age fields from per-view regressions. Returns the mean age (for gender gating)."""
     mean_age = float(np.clip(np.mean(ages), 0.0, 100.0))
     view_std = float(np.std(ages))
-    sigma = math.sqrt((settings.age.model_mae_years * settings.age.sigma_per_mae) ** 2 + view_std**2)
+    sigma = math.sqrt(model_error_years(mean_age) ** 2 + view_std**2)
     result.p_under_18 = round(_normal_cdf((settings.age.adult_years - mean_age) / sigma), 4)
 
     if view_std > settings.age.unsure_view_std:
