@@ -197,6 +197,47 @@ def extract_face_attributes(face: Any) -> Tuple[str, Optional[float], str]:
     return estimated_age_group, age_confidence, gender_prediction
 
 
+def _crop_face_with_margin(image_bgr: np.ndarray, face_box: List[int]) -> Optional[np.ndarray]:
+    """Validate face bounding box and return cropped region with 15% margin."""
+    height, width = image_bgr.shape[:2]
+    rx1, ry1, rx2, ry2 = [int(v) for v in face_box[:4]]
+    if rx1 >= width or ry1 >= height or rx2 <= 0 or ry2 <= 0 or rx2 <= rx1 or ry2 <= ry1:
+        return None
+
+    x1, y1, x2, y2 = clamp_box(face_box, width, height)
+    bw, bh = x2 - x1, y2 - y1
+    mx, my = int(bw * 0.15), int(bh * 0.15)
+    cx1 = max(0, x1 - mx)
+    cy1 = max(0, y1 - my)
+    cx2 = min(width, x2 + mx)
+    cy2 = min(height, y2 + my)
+    return image_bgr[cy1:cy2, cx1:cx2]
+
+
+def _parse_gender_prediction(gender_logits: np.ndarray) -> Tuple[str, float]:
+    """Parse softmax probabilities for gender classification."""
+    exp_g = np.exp(gender_logits - np.max(gender_logits))
+    probs = exp_g / np.sum(exp_g)
+    max_p = float(np.max(probs))
+
+    if max_p < settings.GENDER_SURETY_THRESHOLD:
+        return UNSURE, round(max_p, 3)
+    if probs[0] > probs[1]:
+        return "female-presentation prediction", round(float(probs[0]), 3)
+    return "male-presentation prediction", round(float(probs[1]), 3)
+
+
+def _parse_age_prediction(raw_age_normalized: float, det_score: float) -> Tuple[str, Optional[float], Optional[float]]:
+    """Parse continuous normalized age and compute 3-year bucket."""
+    raw_age = float(raw_age_normalized * 100)
+    if raw_age < 0 or raw_age > 120:
+        return UNSURE, None, None
+    age_grp = age_to_three_year_group(raw_age)
+    est_age = round(raw_age, 1)
+    age_conf = round(float(np.clip(det_score * 0.92, 0.50, 0.95)), 3)
+    return age_grp, est_age, age_conf
+
+
 def predict_face_demographics(
     image_bgr: np.ndarray,
     face_box: List[int],
@@ -214,22 +255,10 @@ def predict_face_demographics(
             return age_grp, round(age_val, 1), age_conf, gender_str, age_conf
 
     # 2. Run GenderAge ONNX session on face crop
-    height, width = image_bgr.shape[:2]
-    rx1, ry1, rx2, ry2 = [int(v) for v in face_box[:4]]
-    if rx1 >= width or ry1 >= height or rx2 <= 0 or ry2 <= 0 or rx2 <= rx1 or ry2 <= ry1:
+    crop = _crop_face_with_margin(image_bgr, face_box)
+    if crop is None:
         return NOT_DETECTED, None, None, NOT_DETECTED, None
 
-    x1, y1, x2, y2 = clamp_box(face_box, width, height)
-    bw, bh = x2 - x1, y2 - y1
-
-    # Add 15% margin
-    mx, my = int(bw * 0.15), int(bh * 0.15)
-    cx1 = max(0, x1 - mx)
-    cy1 = max(0, y1 - my)
-    cx2 = min(width, x2 + mx)
-    cy2 = min(height, y2 + my)
-
-    crop = image_bgr[cy1:cy2, cx1:cx2]
     session = get_genderage_session()
     if session is None:
         return NOT_DETECTED, None, None, NOT_DETECTED, None
@@ -240,33 +269,9 @@ def predict_face_demographics(
         inp_name = session.get_inputs()[0].name
         out = session.run(None, {inp_name: blob})[0]
 
-        # Gender Logits
-        gender_logits = out[0][:2]
-        exp_g = np.exp(gender_logits - np.max(gender_logits))
-        probs = exp_g / np.sum(exp_g)
-        max_p = float(np.max(probs))
-
-        if max_p < settings.GENDER_SURETY_THRESHOLD:
-            gender_str = UNSURE
-            gender_conf = round(max_p, 3)
-        elif probs[0] > probs[1]:
-            gender_str = "female-presentation prediction"
-            gender_conf = round(float(probs[0]), 3)
-        else:
-            gender_str = "male-presentation prediction"
-            gender_conf = round(float(probs[1]), 3)
-
-        # Age Regression
-        raw_age = float(out[0][2] * 100)
-        if raw_age < 0 or raw_age > 120:
-            age_grp = UNSURE
-            est_age = None
-            age_conf = None
-        else:
-            age_grp = age_to_three_year_group(raw_age)
-            est_age = round(raw_age, 1)
-            det_score = float(getattr(face_obj, "det_score", 0.90)) if face_obj is not None else 0.85
-            age_conf = round(float(np.clip(det_score * 0.92, 0.50, 0.95)), 3)
+        gender_str, gender_conf = _parse_gender_prediction(out[0][:2])
+        det_score = float(getattr(face_obj, "det_score", 0.90)) if face_obj is not None else 0.85
+        age_grp, est_age, age_conf = _parse_age_prediction(out[0][2], det_score)
 
         return age_grp, est_age, age_conf, gender_str, gender_conf
     except Exception as exc:
