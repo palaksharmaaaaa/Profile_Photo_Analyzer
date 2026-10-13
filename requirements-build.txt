@@ -1,6 +1,6 @@
 # One-time model build dependencies (NOT needed to run the service):
 #   python scripts/build_models.py
 onnx>=1.17
-onnxruntime>=1.20
+onnxruntime>=1.31.0
 tokenizers>=0.20
 numpy>=1.24
