@@ -26,7 +26,7 @@ jobs:
         run: pip install -r requirements.lock -r requirements-build.txt -r requirements-eval.txt
 
       - name: Cache the models
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: models
           key: models-${{ hashFiles('scripts/build_models.py', 'app/services/model_manager.py', 'app/services/label_prompts.py') }}
