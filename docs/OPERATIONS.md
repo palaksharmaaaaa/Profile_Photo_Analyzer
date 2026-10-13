@@ -100,7 +100,7 @@ Continuous integration (`.github/workflows/ci.yml`) runs on every push and pull 
 | `python` | ruff (lint and format), strict mypy, the tests with 100 % statement and branch coverage, `pip-audit` of the locked runtime dependencies |
 | `frontend` | ESLint, the browser tests with 100 % coverage, `npm audit` |
 | `sonar` | SonarQube Cloud analysis of Python, JavaScript, CSS and HTML with both coverage reports, and its quality gate |
-| `image` | the Docker image builds (models included) and its container becomes ready |
+| `image` | optional, started by hand only: the Docker image builds (models included) and its container becomes ready |
 
 `.github/workflows/evaluation.yml` (weekly and on demand) builds the models, downloads the labelled images, runs
 `scripts/evaluate.py` and fails when a limit in `evaluation/gates.json` is violated. Dependabot proposes updates for pip, npm,

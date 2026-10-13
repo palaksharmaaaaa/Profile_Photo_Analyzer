@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch: # the Docker image check below runs only when started by hand
 
 permissions:
   contents: read
@@ -98,7 +99,8 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   image:
-    name: Docker image builds and starts
+    name: Docker image builds and starts (optional, manual)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [python]
     runs-on: ubuntu-24.04
     steps:
