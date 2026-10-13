@@ -3,7 +3,7 @@ Measure the whole service on labelled images and report what it gets right and w
 
     python scripts/fetch_eval_data.py                       # once: downloads about 2,000 labelled images
     python scripts/evaluate.py --workers 3                  # run the pipeline, write results.jsonl and report.json
-    python scripts/evaluate.py --skip-run --gates evaluation/gates.json   # only re-compute the report and check the gates
+    python scripts/evaluate.py --skip-run --gates           # only re-compute the report and check evaluation/gates.json
 
 The pipeline results are cached in ``results.jsonl`` (one line per image), so an interrupted run continues and
 a report or threshold sweep can be recomputed without running the models again.
@@ -19,30 +19,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from evaluation import metrics, runner  # noqa: E402
 
+ROOT = Path(__file__).resolve().parent.parent
 
-def main(argv: list[str] | None = None) -> int:
+
+def main(argv: list[str] | None = None, *, workspace: Path = ROOT) -> int:
+    """Run the evaluation. Every file lives under ``workspace`` (the project folder): ``.eval_data/`` for the data,
+    the cached results and the report, and ``evaluation/gates.json`` for the limits."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--data", type=Path, default=Path(".eval_data"))
-    parser.add_argument("--results", type=Path, help="default: <data>/results.jsonl")
-    parser.add_argument("--report", type=Path, help="default: <data>/report.json")
     parser.add_argument("--workers", type=int, default=3, help="processes (0 = run in this process)")
     parser.add_argument("--threads", type=int, default=4, help="ONNX threads per process")
     parser.add_argument("--limit-per-set", type=int)
     parser.add_argument("--sets", nargs="+")
     parser.add_argument("--skip-run", action="store_true", help="do not run the models, only report")
-    parser.add_argument("--gates", type=Path, help="JSON file of limits; the exit code is 1 when one is violated")
+    parser.add_argument("--gates", action="store_true", help="check evaluation/gates.json; exit code 1 when violated")
     parser.add_argument("--minor-threshold", type=float, help="default: the configured minor_risk_probability")
     args = parser.parse_args(argv)
 
     from app.core.config import settings
 
-    results_path = args.results or args.data / "results.jsonl"
-    report_path = args.report or args.data / "report.json"
-    labels = runner.load_labels(args.data / "labels.csv")
+    data = workspace / ".eval_data"
+    results_path = data / "results.jsonl"
+    report_path = data / "report.json"
+    labels = runner.load_labels(data / "labels.csv")
     if args.skip_run:
         rows = runner.load_results(results_path)
     else:
-        rows = runner.run_folder(args.data, results_path, args.workers, args.threads, args.limit_per_set, args.sets)
+        rows = runner.run_folder(data, results_path, args.workers, args.threads, args.limit_per_set, args.sets)
 
     report = metrics.build_report(rows, labels, args.minor_threshold or settings.age.minor_risk_probability)
     report["run"] = metrics.run_info(
@@ -76,7 +78,9 @@ def main(argv: list[str] | None = None) -> int:
     print("best verification thresholds with at most 1 % non-human images verified as human:", best)
 
     if args.gates:
-        problems = metrics.check_gates(report, json.loads(args.gates.read_text(encoding="utf-8")))
+        problems = metrics.check_gates(
+            report, json.loads((workspace / "evaluation" / "gates.json").read_text(encoding="utf-8"))
+        )
         for problem in problems:
             print("GATE FAILED:", problem)
         return 1 if problems else 0

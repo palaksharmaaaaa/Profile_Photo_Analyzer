@@ -89,21 +89,16 @@ def test_warm_up_runs_one_inference_on_every_real_model():
     assert report["yunet"]["providers"] == ["OpenCV DNN"]
 
 
-def test_parallel_and_sequential_inference_give_the_same_answer(test_image_rgb):
+def test_parallel_and_sequential_inference_give_the_same_answer(test_image_rgb, monkeypatch):
     from app.core.config import settings
 
-    def run():
-        return analyze_profile_photo_image(test_image_rgb, "p.jpg", render_annotation=False)
-
-    parallel_result = run()
-    settings.models.parallel_inference = False
-    try:
-        sequential_result = run()
-    finally:
-        settings.models.parallel_inference = True
-    for result in (parallel_result, sequential_result):
+    def run(parallel):
+        monkeypatch.setattr(settings.models, "parallel_inference", parallel)
+        result = analyze_profile_photo_image(test_image_rgb, "p.jpg", render_annotation=False)
         result["diagnostics"]["processing_time_ms"] = 0
-    assert parallel_result == sequential_result
+        return result
+
+    assert run(True) == run(False)
 
 
 @pytest.mark.skipif(not os.environ.get("PPA_TEST_IMAGES_DIR"), reason="PPA_TEST_IMAGES_DIR not set")

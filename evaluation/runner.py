@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 from unittest.mock import patch
 
 from evaluation.metrics import Row
@@ -82,7 +82,9 @@ def analyse_file(path: Path, analyze: Analyzer = run_pipeline) -> Row:
     try:
         result, candidates = analyze(path)
     except Exception as exc:
-        return {**row, "error": f"{type(exc).__name__}: {exc}", "ms": round((time.perf_counter() - started) * 1000, 1)}
+        seconds = time.perf_counter() - started
+        elapsed_ms = round(1000 * seconds, 1)
+        return {**row, "error": f"{type(exc).__name__}: {exc}", "ms": elapsed_ms}
 
     humans = []
     for face in result["human_faces"]:
@@ -125,6 +127,30 @@ def _work(path: str) -> Row:
     return analyse_file(Path(path))
 
 
+def select_images(
+    data: Path, labels: dict[str, Row], done: set[str], limit_per_set: int | None, sets: list[str] | None
+) -> list[str]:
+    """The labelled images still to analyse: of the wanted sets, at most ``limit_per_set`` each, without those done."""
+    taken: dict[str, int] = {}
+    todo: list[str] = []
+    for file, label in labels.items():
+        name = label["set"]
+        if (sets and name not in sets) or (limit_per_set is not None and taken.get(name, 0) >= limit_per_set):
+            continue
+        taken[name] = taken.get(name, 0) + 1
+        if file not in done:
+            todo.append(str(data / file))
+    return todo
+
+
+def _write_results(stream: Iterator[Row], out: TextIO, total: int) -> None:
+    for index, row in enumerate(stream, start=1):
+        out.write(json.dumps(row) + "\n")
+        out.flush()
+        if index % 25 == 0:
+            print(f"  {index}/{total} analysed", flush=True)
+
+
 def run_folder(
     data: Path,
     results_path: Path,
@@ -139,34 +165,14 @@ def run_folder(
     interrupted run continues where it stopped. ``workers=0`` runs in this process.
     """
     work = work or _work
-    labels = load_labels(data / "labels.csv")
     done = {row["file"] for row in load_results(results_path)}
-    taken: dict[str, int] = {}
-    todo: list[str] = []
-    for file, label in labels.items():
-        if sets and label["set"] not in sets:
-            continue
-        if limit_per_set is not None and taken.get(label["set"], 0) >= limit_per_set:
-            continue
-        taken[label["set"]] = taken.get(label["set"], 0) + 1
-        if file not in done:
-            todo.append(str(data / file))
+    todo = select_images(data, load_labels(data / "labels.csv"), done, limit_per_set, sets)
 
     results_path.parent.mkdir(parents=True, exist_ok=True)
     with results_path.open("a", encoding="utf-8") as out:
         if workers <= 0:
-            stream: Iterator[Row] = (work(path) for path in todo)
-            pool = None
+            _write_results((work(path) for path in todo), out, len(todo))
         else:
-            pool = Pool(workers, initializer=_init_worker, initargs=(threads,))
-            stream = pool.imap_unordered(work, todo)
-        try:
-            for index, row in enumerate(stream, start=1):
-                out.write(json.dumps(row) + "\n")
-                out.flush()
-                if index % 25 == 0:
-                    print(f"  {index}/{len(todo)} analysed", flush=True)
-        finally:
-            if pool is not None:
-                pool.terminate()
+            with Pool(workers, initializer=_init_worker, initargs=(threads,)) as pool:
+                _write_results(pool.imap_unordered(work, todo), out, len(todo))
     return load_results(results_path)

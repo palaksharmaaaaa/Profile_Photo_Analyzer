@@ -40,7 +40,7 @@ jobs:
         run: python scripts/fetch_eval_data.py
 
       - name: Evaluate and check the gates
-        run: python scripts/evaluate.py --workers 2 --gates evaluation/gates.json
+        run: python scripts/evaluate.py --workers 2 --gates
 
       - uses: actions/upload-artifact@v4
         if: always()

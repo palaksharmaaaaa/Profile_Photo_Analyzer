@@ -298,7 +298,7 @@ def test_fetch_eval_data_command_line_resumes_and_survives_one_failing_source(tm
 
     with (
         patch.object(fetch_eval_data, "fetch_non_human", fake_non_human),
-        patch.object(fetch_eval_data, "fetch_fairface", lambda *args: None),
+        patch.object(fetch_eval_data, "fetch_fairface", return_value=None),
         patch.object(sys, "argv", ["fetch", "--out", str(out), "--only", "pets", "birds", "fairface"]),
     ):
         assert fetch_eval_data.main() == 0
@@ -310,7 +310,7 @@ def test_fetch_eval_data_command_line_resumes_and_survives_one_failing_source(tm
 
     fresh = tmp_path / "fresh"
     with (
-        patch.object(fetch_eval_data, "fetch_non_human", lambda *args: None),
+        patch.object(fetch_eval_data, "fetch_non_human", return_value=None),
         patch.object(sys, "argv", ["fetch", "--out", str(fresh), "--only", "pets"]),
     ):
         fetch_eval_data.main()
@@ -546,7 +546,9 @@ def test_main_builds_the_requested_stages_and_merges_the_manifest(tmp_path, monk
 # ---- every tool can be run as a program ---------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("script", ["build_models", "fetch_eval_data", "benchmark_latency", "evaluate"])
+@pytest.mark.parametrize(
+    "script", ["build_models", "fetch_eval_data", "benchmark_latency", "evaluate", "render_evaluation"]
+)
 def test_the_tools_describe_themselves_when_run_as_programs(script, capsys):
     with patch.object(sys, "argv", [script, "--help"]), pytest.raises(SystemExit) as stopped:
         runpy.run_path(str(SCRIPTS / f"{script}.py"), run_name="__main__")

@@ -401,15 +401,17 @@ def test_unavailable_verdicts_are_not_recorded():
 
 
 def test_command_line_runs_reports_and_checks_gates(tmp_path, capsys):
-    data = make_dataset(tmp_path)
+    (tmp_path / ".eval_data").mkdir()
+    data = make_dataset(tmp_path / ".eval_data")
 
     def work(path):
         return runner.analyse_file(Path(path), fake_pipeline)
 
-    gates = tmp_path / "gates.json"
+    (tmp_path / "evaluation").mkdir()
+    gates = tmp_path / "evaluation" / "gates.json"
     gates.write_text(json.dumps({"portraits.detection.exactly_one_human_rate": {"min": 0.9}}), encoding="utf-8")
     with patch.object(runner, "_work", work):
-        code = evaluate.main(["--data", str(data), "--workers", "0", "--gates", str(gates)])
+        code = evaluate.main(["--workers", "0", "--gates"], workspace=tmp_path)
     assert code == 0
     report = json.loads((data / "report.json").read_text(encoding="utf-8"))
     assert report["portraits"]["detection"]["images"] == 2
@@ -418,9 +420,9 @@ def test_command_line_runs_reports_and_checks_gates(tmp_path, capsys):
     assert "best verification thresholds" in capsys.readouterr().out
 
     gates.write_text(json.dumps({"portraits.detection.exactly_one_human_rate": {"min": 1.1}}), encoding="utf-8")
-    assert evaluate.main(["--data", str(data), "--skip-run", "--gates", str(gates)]) == 1
+    assert evaluate.main(["--skip-run", "--gates"], workspace=tmp_path) == 1
     assert "GATE FAILED" in capsys.readouterr().out
-    assert evaluate.main(["--data", str(data), "--skip-run", "--minor-threshold", "0.3"]) == 0
+    assert evaluate.main(["--skip-run", "--minor-threshold", "0.3"], workspace=tmp_path) == 0
 
 
 # ---- the generated tables of the evaluation document ---------------------------------------------------------------------
@@ -445,7 +447,7 @@ def sample_report():
         "2026-10-13",
     )
     report["thresholds"] = metrics.threshold_sweep(
-        metrics.human_set(rows, labels), metrics.not_human_set(rows, labels), [0.5, 0.6, 0.7], [0.25]
+        metrics.human_set(rows, labels), metrics.not_human_set(rows, labels), [0.5, 0.55, 0.6, 0.7], [0.0, 0.25]
     )
     report["minor_thresholds"] = metrics.minor_sweep(metrics.human_set(rows, labels), [0.1, 0.5])
     return report
@@ -467,7 +469,8 @@ def test_every_section_of_the_document_is_generated_from_the_report():
     assert "| ALL | 1 | 0.0 % | 0.0 % | 100.0 % | 0.0 % | 0.0 % |" in text
     assert "`human_min_prob`" in text
     assert "0.7 (used)" in text
-    assert "0.5 |" in text and "0.6 |" in text
+    assert "0.5 |" in text
+    assert "0.6 |" in text
     assert "#### Age by race group" in text
     assert "| Group | Faces | Age Unsure |" in text
     assert "Faces scored: 1 labelled 0-9, 0 labelled 30 or older." in text
@@ -502,16 +505,18 @@ def test_render_script_updates_the_document(tmp_path, capsys):
     from evaluation import render
 
     render_script = __import__("render_evaluation")
-    report = tmp_path / "report.json"
-    report.write_text(json.dumps(sample_report()), encoding="utf-8")
-    doc = tmp_path / "doc.md"
+    (tmp_path / ".eval_data").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / ".eval_data" / "report.json").write_text(json.dumps(sample_report()), encoding="utf-8")
+    doc = tmp_path / "docs" / "EVALUATION_AND_FAIRNESS.md"
     doc.write_text(
         f"hand written\n{render.START_MARKER}\nSTALE-NUMBERS\n{render.END_MARKER}\nmore hand written\n",
         encoding="utf-8",
     )
-    assert render_script.main(["--report", str(report), "--doc", str(doc)]) == 0
+    assert render_script.main([], workspace=tmp_path) == 0
     text = doc.read_text(encoding="utf-8")
-    assert text.startswith("hand written") and text.rstrip().endswith("more hand written")
+    assert text.startswith("hand written")
+    assert text.rstrip().endswith("more hand written")
     assert "Run of 2026-10-13" in text
     assert "STALE-NUMBERS" not in text
     assert "updated" in capsys.readouterr().out
@@ -538,18 +543,16 @@ def test_the_speed_table_compares_parallel_and_sequential_runs(tmp_path, capsys)
     assert "| END-TO-END | 500 | 255 | 200 | 105 |" in text
 
     render_script = __import__("render_evaluation")
-    doc = tmp_path / "doc.md"
+    (tmp_path / ".eval_data").mkdir()
+    (tmp_path / "docs").mkdir()
+    doc = tmp_path / "docs" / "EVALUATION_AND_FAIRNESS.md"
     doc.write_text(
         f"a\n{render.BENCHMARK_START_MARKER}\nSTALE-SPEED\n{render.BENCHMARK_END_MARKER}\nb\n", encoding="utf-8"
     )
-    parallel, sequential = tmp_path / "p.json", tmp_path / "s.json"
-    parallel.write_text(json.dumps(benchmark_output(100)), encoding="utf-8")
-    sequential.write_text(json.dumps(benchmark_output(250)), encoding="utf-8")
-    argv = ["--report", str(tmp_path / "no-report.json"), "--doc", str(doc)]
-    assert (
-        render_script.main([*argv, "--benchmark-parallel", str(parallel), "--benchmark-sequential", str(sequential)])
-        == 0
-    )
+    data = tmp_path / ".eval_data"
+    (data / "benchmark_parallel.json").write_text(json.dumps(benchmark_output(100)), encoding="utf-8")
+    (data / "benchmark_sequential.json").write_text(json.dumps(benchmark_output(250)), encoding="utf-8")
+    assert render_script.main(["--benchmark"], workspace=tmp_path) == 0  # no report.json here: only the speed table
     assert "STALE-SPEED" not in doc.read_text(encoding="utf-8")
     assert "| face detection | 250 |" in doc.read_text(encoding="utf-8")
     capsys.readouterr()
@@ -559,7 +562,8 @@ def test_the_shipped_gates_are_well_formed_and_name_things_a_report_contains():
     gates = json.loads((ROOT / "evaluation" / "gates.json").read_text(encoding="utf-8"))
     assert gates
     for path, limits in gates.items():
-        assert limits.keys() <= {"min", "max"} and limits, path
+        assert limits, path
+        assert limits.keys() <= {"min", "max"}, path
         assert all(isinstance(value, int | float) for value in limits.values()), path
 
     rows = [row("a", [face()])] + [row(name, [], others=1) for name in ("pets", "birds", "anime")]

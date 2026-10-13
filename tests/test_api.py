@@ -99,7 +99,7 @@ def test_limits_tell_a_client_what_the_service_accepts(monkeypatch):
     assert body["max_upload_bytes"] == settings.upload.max_bytes
     assert body["max_dimension"] == settings.upload.max_dimension
     assert "image/jpeg" in body["formats"]
-    assert {"image/jpeg", "image/png", "image/webp", "image/gif", "image/tiff", "image/bmp"} == set(body["formats"])
+    assert set(body["formats"]) == {"image/jpeg", "image/png", "image/webp", "image/gif", "image/tiff", "image/bmp"}
 
 
 def test_health_reports_every_model_and_degrades_honestly():

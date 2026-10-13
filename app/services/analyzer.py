@@ -72,6 +72,7 @@ COLOR_PURPLE = (200, 50, 180)
 
 MODEL_INFO_CHECK = "Image information check (entropy and variance)"
 NO_INFORMATION_REASON = "This image has no information to check or process (blank or solid colour)."
+SKIPPED_NO_INFORMATION = "Skipped because the image has no visual information."
 DEFAULT_FORMAT = "image/jpeg"
 DISCLAIMER = (
     "Age and gender are appearance-based estimates; the typical age error is several years. "
@@ -382,7 +383,7 @@ def _pipeline_steps(
 ) -> list[PipelineStepItem]:
     """The four stages shown in the UI stepper, with what each one did."""
     if census is None:
-        detection_status, detection_detail = SKIPPED, "Skipped because the image has no visual information."
+        detection_status, detection_detail = SKIPPED, SKIPPED_NO_INFORMATION
     elif census.detection_ran:
         detection_status = COMPLETED
         detection_detail = (
@@ -509,8 +510,8 @@ def analyze_profile_photo_image(
     info = check_image_information(bgr)
     if not info["has_information"]:
         _emit(report, "information", FAILED, info["reason"], stage_started)
-        _emit(report, "detection", SKIPPED, "Skipped because the image has no visual information.")
-        _emit(report, "demographics", SKIPPED, "Skipped because the image has no visual information.")
+        _emit(report, "detection", SKIPPED, SKIPPED_NO_INFORMATION)
+        _emit(report, "demographics", SKIPPED, SKIPPED_NO_INFORMATION)
         response = _no_information_response(bgr, info, filename, file_format, meta, render_annotation)
         response["diagnostics"]["processing_time_ms"] = round((time.perf_counter() - started) * 1000, 1)
         return response

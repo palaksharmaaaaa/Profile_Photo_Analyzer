@@ -55,18 +55,18 @@ _HTTP_CODES = {
 }
 
 
-async def _handle_api_error(_: Request, exc: Exception) -> JSONResponse:
+def _handle_api_error(_: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, ApiError)
     return error_response(exc.status_code, exc.code, exc.reason, exc.headers)
 
 
-async def _handle_http_exception(_: Request, exc: Exception) -> JSONResponse:
+def _handle_http_exception(_: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, StarletteHTTPException)
     code, reason = _HTTP_CODES.get(exc.status_code, (ErrorCode.INTERNAL_ERROR, str(exc.detail)))
     return error_response(exc.status_code, code, reason)
 
 
-async def _handle_validation_error(_: Request, exc: Exception) -> JSONResponse:
+def _handle_validation_error(_: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, RequestValidationError)
     fields = ", ".join(
         sorted({".".join(str(part) for part in error["loc"][1:]) or "request" for error in exc.errors()})

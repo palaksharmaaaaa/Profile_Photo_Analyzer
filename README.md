@@ -240,7 +240,7 @@ pytest                                       # 100 % statement and branch covera
 npm run lint && npm test                     # ESLint; browser tests with 100 % coverage
 
 python scripts/fetch_eval_data.py            # about 2,000 labelled images into .eval_data/
-python scripts/evaluate.py --workers 3       # measure the real pipeline; add --gates evaluation/gates.json to check limits
+python scripts/evaluate.py --workers 3       # measure the real pipeline; add --gates to check evaluation/gates.json
 python scripts/benchmark_latency.py --image portrait.jpg [--parallel]
 ```
 

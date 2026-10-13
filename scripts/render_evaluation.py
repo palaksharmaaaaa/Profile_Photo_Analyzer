@@ -3,10 +3,14 @@ Write the measured tables of an evaluation report into docs/EVALUATION_AND_FAIRN
 
     python scripts/evaluate.py --skip-run               # (re)compute .eval_data/report.json from the cached results
     python scripts/render_evaluation.py                 # replace the text between the markers in the document
-    python scripts/render_evaluation.py --benchmark-parallel a.json --benchmark-sequential b.json   # the speed table
+
+    python scripts/benchmark_latency.py --image p.jpg --json .eval_data/benchmark_sequential.json
+    python scripts/benchmark_latency.py --image p.jpg --parallel --json .eval_data/benchmark_parallel.json
+    python scripts/render_evaluation.py --benchmark     # also fill in the speed table from those two files
 
 Only the text between ``<!-- measured:start -->`` and ``<!-- measured:end -->`` (and between the benchmark markers) is
-replaced; the rest of the document is written by hand and says what the numbers mean and do not mean.
+replaced; the rest of the document is written by hand and says what the numbers mean and do not mean. All files are
+under the project folder: ``.eval_data/`` and ``docs/``.
 """
 
 import argparse
@@ -21,29 +25,31 @@ from evaluation import render  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, workspace: Path = ROOT) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--report", type=Path, default=Path(".eval_data/report.json"))
-    parser.add_argument("--doc", type=Path, default=ROOT / "docs" / "EVALUATION_AND_FAIRNESS.md")
-    parser.add_argument("--benchmark-parallel", type=Path, help="output of benchmark_latency.py --parallel --json")
-    parser.add_argument("--benchmark-sequential", type=Path, help="output of benchmark_latency.py --json")
+    parser.add_argument(
+        "--benchmark", action="store_true", help="fill in the speed table from .eval_data/benchmark_*.json"
+    )
     args = parser.parse_args(argv)
 
-    document = args.doc.read_text(encoding="utf-8")
-    if args.report.is_file():
-        report = json.loads(args.report.read_text(encoding="utf-8"))
+    data = workspace / ".eval_data"
+    doc = workspace / "docs" / "EVALUATION_AND_FAIRNESS.md"
+    document = doc.read_text(encoding="utf-8")
+    report_path = data / "report.json"
+    if report_path.is_file():
+        report = json.loads(report_path.read_text(encoding="utf-8"))
         document = render.replace_between_markers(document, render.render(report))
-    if args.benchmark_parallel and args.benchmark_sequential:
-        parallel = json.loads(args.benchmark_parallel.read_text(encoding="utf-8"))
-        sequential = json.loads(args.benchmark_sequential.read_text(encoding="utf-8"))
+    if args.benchmark:
+        parallel = json.loads((data / "benchmark_parallel.json").read_text(encoding="utf-8"))
+        sequential = json.loads((data / "benchmark_sequential.json").read_text(encoding="utf-8"))
         document = render.replace_between(
             document,
             render.BENCHMARK_START_MARKER,
             render.BENCHMARK_END_MARKER,
             render.render_benchmark(parallel, sequential),
         )
-    args.doc.write_text(document, encoding="utf-8")
-    print(f"updated {args.doc}")
+    doc.write_text(document, encoding="utf-8")
+    print(f"updated {doc}")
     return 0
 
 

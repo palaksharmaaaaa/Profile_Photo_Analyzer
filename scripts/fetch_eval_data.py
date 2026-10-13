@@ -132,36 +132,36 @@ def fetch_fairface(out: Path, count: int, rng: random.Random, writer: RowWriter,
     print(f"  fairface: {done} new images ({len(wanted)} selected)", flush=True)
 
 
+def _window_rows(name: str, spec: DatasetSpec, offset: int, known: set[str]) -> list[dict[str, Any]]:
+    """The rows of one window that match the set's filter and are not yet known; an unavailable window gives none."""
+    dataset, config, split, row_filter = spec
+    try:
+        rows = _rows(dataset, config, split, offset, WINDOW)
+    except urllib.error.HTTPError as exc:  # a few windows of a dataset can be unavailable: take the next one
+        print(f"  {name}: skipping rows {offset}-{offset + WINDOW} ({exc.code})", flush=True)
+        return []
+    matching = [row for row in rows if not row_filter or row["row"][row_filter[0]] == row_filter[1]]
+    return [row for row in matching if f"{name}/{name}_{row['row_idx']:06d}.jpg" not in known]
+
+
 def fetch_non_human(
     out: Path, name: str, spec: DatasetSpec, count: int, rng: random.Random, writer: RowWriter, known: set[str]
 ) -> None:
-    dataset, config, split, row_filter = spec
+    dataset, config = spec[0], spec[1]
     total = _total(dataset, config)
-    folder = out / name
-    folder.mkdir(parents=True, exist_ok=True)
+    (out / name).mkdir(parents=True, exist_ok=True)
     have = sum(1 for key in known if key.startswith(f"{name}/"))
     windows = list(range(0, max(1, total - WINDOW + 1), WINDOW))
     rng.shuffle(windows)
     for offset in windows:
         if have >= count:
             break
-        try:
-            rows = _rows(dataset, config, split, offset, WINDOW)
-        except urllib.error.HTTPError as exc:  # a few windows of a dataset can be unavailable: take the next one
-            print(f"  {name}: skipping rows {offset}-{offset + WINDOW} ({exc.code})", flush=True)
-            continue
-        for row in rows:
-            if row_filter and row["row"][row_filter[0]] != row_filter[1]:
-                continue
+        for row in _window_rows(name, spec, offset, known)[: count - have]:
             file = f"{name}/{name}_{row['row_idx']:06d}.jpg"
-            if file in known:
-                continue
             (out / file).write_bytes(_open(row["row"]["image"]["src"]))
             writer.writerow([file, name, "not_human", "", "", ""])
             known.add(file)
             have += 1
-            if have >= count:
-                break
     print(f"  {name}: {have} images", flush=True)
 
 

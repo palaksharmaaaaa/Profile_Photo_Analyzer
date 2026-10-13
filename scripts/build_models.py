@@ -55,33 +55,39 @@ SIGLIP = "https://huggingface.co/onnx-community/siglip2-base-patch16-224-ONNX/re
 MIVOLO = "https://huggingface.co/Sam-Apostel/mivolo-v2-age-onnx/resolve/main"
 BUFFALO = "https://github.com/deepinsight/insightface/releases/download/v0.7"
 
+SIG_VISION_FILE = "sig_vision_int8.onnx"
+SIG_TEXT_FILE = "sig_text_int8.onnx"
+TOKENIZER_FILE = "tokenizer.json"
+MIVOLO_SOURCE_FILE = "mivolo_v2_age.onnx"
+BUFFALO_FILE = "buffalo_l.zip"
+
 # local name -> (url, sha256)
 SOURCES = {
-    "sig_vision_int8.onnx": (
+    SIG_VISION_FILE: (
         f"{SIGLIP}/onnx/vision_model_int8.onnx",
         "0dd31785a2713f1113ef2272472165c69d580473dae38d7b47568ac587795e70",
     ),
-    "sig_text_int8.onnx": (
+    SIG_TEXT_FILE: (
         f"{SIGLIP}/onnx/text_model_int8.onnx",
         "3a0603d3a00c05a80a6ded4743c16aaac7b1e62cdcc7e362e7ce418659b96400",
     ),
-    "tokenizer.json": (
+    TOKENIZER_FILE: (
         f"{SIGLIP}/tokenizer.json",
         "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322",
     ),
-    "mivolo_v2_age.onnx": (
+    MIVOLO_SOURCE_FILE: (
         f"{MIVOLO}/mivolo_v2_age.onnx",
         "2db5e05be33b3f120518a86f29a4a65eb0a01c2967219b8787a7dead9b796951",
     ),
-    "buffalo_l.zip": (
+    BUFFALO_FILE: (
         f"{BUFFALO}/buffalo_l.zip",
         "80ffe37d8a5940d59a7384c201a2a38d4741f2f3c51eef46ebb28218a7b0ca2f",
     ),
 }
 STAGE_SOURCES = {
-    "siglip": ["sig_vision_int8.onnx", "sig_text_int8.onnx", "tokenizer.json"],
-    "mivolo": ["mivolo_v2_age.onnx"],
-    "scrfd": ["buffalo_l.zip"],
+    "siglip": [SIG_VISION_FILE, SIG_TEXT_FILE, TOKENIZER_FILE],
+    "mivolo": [MIVOLO_SOURCE_FILE],
+    "scrfd": [BUFFALO_FILE],
 }
 
 OUT_VISION = "siglip2_base_vision_int8.onnx"
@@ -224,17 +230,17 @@ def main() -> None:
     built: list[str] = []
     if "siglip" in stages:
         print("SigLIP2 vision tower + label embeddings")
-        shutil.copyfile(work / "sig_vision_int8.onnx", models / OUT_VISION)
-        build_bank(work / "sig_text_int8.onnx", work / "tokenizer.json", models / OUT_BANK)
+        shutil.copyfile(work / SIG_VISION_FILE, models / OUT_VISION)
+        build_bank(work / SIG_TEXT_FILE, work / TOKENIZER_FILE, models / OUT_BANK)
         built += [OUT_VISION, OUT_BANK]
         manifest["label_bank"] = {"file": OUT_BANK, "sha256": sha256_of(models / OUT_BANK)}
     if "mivolo" in stages:
         print("MiVOLO v2 age + gender")
-        manifest["validation"]["mivolo_exposed_head"] = build_mivolo(work / "mivolo_v2_age.onnx", models / OUT_MIVOLO)
+        manifest["validation"]["mivolo_exposed_head"] = build_mivolo(work / MIVOLO_SOURCE_FILE, models / OUT_MIVOLO)
         built.append(OUT_MIVOLO)
     if "scrfd" in stages:
         print("SCRFD-10G face detector")
-        extract_scrfd(work / "buffalo_l.zip", models / OUT_SCRFD)
+        extract_scrfd(work / BUFFALO_FILE, models / OUT_SCRFD)
         built.append(OUT_SCRFD)
 
     import onnxruntime

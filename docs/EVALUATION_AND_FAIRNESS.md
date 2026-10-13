@@ -221,7 +221,7 @@ pip install -r requirements-eval.txt
 python scripts/fetch_eval_data.py                    # downloads about 2,000 labelled images (resumable)
 python scripts/evaluate.py --workers 3               # runs the pipeline, writes results.jsonl and report.json
 python scripts/render_evaluation.py                  # writes the tables of section 1.2 into this document
-python scripts/evaluate.py --skip-run --gates evaluation/gates.json   # check the limits in evaluation/gates.json
+python scripts/evaluate.py --skip-run --gates              # check the limits in evaluation/gates.json
 ```
 
 `evaluation/gates.json` holds the limits that the weekly workflow (`.github/workflows/evaluation.yml`) enforces; they

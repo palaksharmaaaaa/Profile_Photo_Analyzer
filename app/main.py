@@ -64,7 +64,8 @@ def create_app() -> FastAPI:
     )
     install_error_handlers(application)
 
-    application.add_middleware(
+    application.add_middleware(SecurityMiddleware)
+    application.add_middleware(  # added last, so it is the outermost layer: error answers carry CORS headers too
         CORSMiddleware,
         allow_origins=settings.security.cors_origins,
         allow_credentials=settings.security.cors_allow_credentials,
@@ -72,7 +73,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         expose_headers=["X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining", "Retry-After"],
     )
-    application.add_middleware(SecurityMiddleware)  # added last, so it is the outermost layer
 
     application.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     application.include_router(router)

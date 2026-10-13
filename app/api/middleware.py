@@ -65,6 +65,46 @@ def _too_large() -> JSONResponse:
     return error_response(413, ErrorCode.FILE_TOO_LARGE, f"Maximum upload size is {limit_mb} MB.")
 
 
+class RequestScope:
+    """What is known about one request while it is served: its headers, answer state and the size of its body so far."""
+
+    def __init__(self, scope: Scope, receive: Receive, send: Send, request_id: str) -> None:
+        self.scope = scope
+        self._receive = receive
+        self._send = send
+        self.extra = {"X-Request-ID": request_id, **SECURITY_HEADERS}
+        self.status = 500
+        self.response_started = False
+        self.refused = False  # the body proved too large and the 413 has been sent: what the app sends now is dropped
+        self._received = 0
+
+    async def send(self, message: Message) -> None:
+        """Pass a message on, adding the id and security headers to the response start."""
+        if self.refused:
+            return
+        if message["type"] == "http.response.start":
+            self.response_started = True
+            self.status = message["status"]
+            response_headers = MutableHeaders(scope=message)
+            for name, value in self.extra.items():
+                response_headers[name] = value
+        await self._send(message)
+
+    async def receive(self) -> Message:
+        """``receive`` that answers 413 and ends the request once more than an upload may contain has arrived."""
+        message = await self._receive()
+        if message["type"] == "http.request" and not self.refused:
+            self._received += len(message.get("body", b""))
+            if self._received > settings.upload.max_bytes + BODY_SLACK_BYTES:
+                await _too_large()(self.scope, self._receive, self.send)
+                self.refused = True
+                return {"type": "http.disconnect"}
+        return message
+
+    async def respond(self, response: JSONResponse) -> None:
+        await response(self.scope, self._receive, self.send)
+
+
 class SecurityMiddleware:
     """Pure ASGI middleware (no ``BaseHTTPMiddleware``), so streaming responses and cancellation behave."""
 
@@ -103,6 +143,42 @@ class SecurityMiddleware:
                 return _too_large()
         return None
 
+    def _admit(self, scope: Scope) -> tuple[JSONResponse | None, bool]:
+        """Count a synchronous analysis; a refusal when too many run at once. Other requests are not counted."""
+        if scope["method"] != "POST" or scope["path"] not in GUARDED_PATHS:
+            return None, False
+        if self.active_analyses >= settings.security.max_concurrent_requests:
+            return error_response(503, ErrorCode.BUSY, "The server is busy: the concurrency limit was reached."), False
+        self.active_analyses += 1
+        return None, True
+
+    async def _serve(self, request: RequestScope, headers: Headers) -> bool:
+        """Answer or pass on the request; True when it was counted as a running analysis."""
+        refusal = self._refusal(request.scope, headers, request.extra)
+        counted = False
+        if refusal is None:
+            refusal, counted = self._admit(request.scope)
+        if refusal is not None:
+            await request.respond(refusal)
+            return False
+        try:
+            await self.app(request.scope, request.receive, request.send)
+        except Exception:
+            logger.exception("Unhandled error in %s %s", request.scope["method"], request.scope["path"])
+            if not request.response_started:
+                await request.respond(
+                    error_response(500, ErrorCode.INTERNAL_ERROR, "Something went wrong. Check the server logs.")
+                )
+        return counted
+
+    @staticmethod
+    def _record(request: RequestScope, started: float) -> None:
+        scope = request.scope
+        route = getattr(scope.get("route"), "path", None)
+        label = route or ("/static" if scope["path"].startswith(STATIC_PREFIX) else "unmatched")
+        metrics.HTTP_REQUESTS.labels(scope["method"], label, str(request.status)).inc()
+        metrics.HTTP_SECONDS.labels(scope["method"], label).observe(time.perf_counter() - started)
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -112,63 +188,12 @@ class SecurityMiddleware:
         request_id = self._request_id(headers)
         token = request_id_var.set(request_id)
         started = time.perf_counter()
-        extra = {"X-Request-ID": request_id, **SECURITY_HEADERS}
-        status = {"code": 500}
-        response_started = False
-        refused = False  # the body proved too large and the 413 has been sent: whatever the app sends now is dropped
-
-        async def send_with_headers(message: Message) -> None:
-            nonlocal response_started
-            if refused:
-                return
-            if message["type"] == "http.response.start":
-                response_started = True
-                status["code"] = message["status"]
-                response_headers = MutableHeaders(scope=message)
-                for name, value in extra.items():
-                    response_headers[name] = value
-            await send(message)
-
-        received = 0
-
-        async def capped_receive() -> Message:
-            """``receive`` that answers 413 and ends the request once more than an upload may contain has arrived."""
-            nonlocal received, refused
-            message = await receive()
-            if message["type"] == "http.request" and not refused:
-                received += len(message.get("body", b""))
-                if received > settings.upload.max_bytes + BODY_SLACK_BYTES:
-                    await _too_large()(scope, receive, send_with_headers)
-                    refused = True
-                    return {"type": "http.disconnect"}
-            return message
-
-        guarded = scope["method"] == "POST" and scope["path"] in GUARDED_PATHS
-        acquired = False
+        request = RequestScope(scope, receive, send, request_id)
+        counted = False
         try:
-            refusal = self._refusal(scope, headers, extra)
-            if refusal is None and guarded:
-                if self.active_analyses >= settings.security.max_concurrent_requests:
-                    refusal = error_response(
-                        503, ErrorCode.BUSY, "The server is busy: the concurrency limit was reached."
-                    )
-                else:
-                    self.active_analyses += 1
-                    acquired = True
-            if refusal is not None:
-                await refusal(scope, receive, send_with_headers)
-                return
-            await self.app(scope, capped_receive, send_with_headers)
-        except Exception:
-            logger.exception("Unhandled error in %s %s", scope["method"], scope["path"])
-            if not response_started:
-                response = error_response(500, ErrorCode.INTERNAL_ERROR, "Something went wrong. Check the server logs.")
-                await response(scope, receive, send_with_headers)
+            counted = await self._serve(request, headers)
         finally:
-            if acquired:
+            if counted:
                 self.active_analyses -= 1
-            route = getattr(scope.get("route"), "path", None)
-            label = route or ("/static" if scope["path"].startswith(STATIC_PREFIX) else "unmatched")
-            metrics.HTTP_REQUESTS.labels(scope["method"], label, str(status["code"])).inc()
-            metrics.HTTP_SECONDS.labels(scope["method"], label).observe(time.perf_counter() - started)
+            self._record(request, started)
             request_id_var.reset(token)

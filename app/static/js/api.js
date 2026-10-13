@@ -62,18 +62,15 @@ const sleep = (ms, signal) =>
 
 /** Ask for the job until it has finished, reporting every stage once. */
 export async function pollJob(job, onStage, { fetchImpl = fetch, pollMs = POLL_MS, signal, seen = 0 } = {}) {
-    let reported = seen;
-    for (;;) {
-        const status = await getJob(job.status_url, { fetchImpl, signal });
-        for (const stage of status.stages.slice(reported)) {
-            onStage(stage);
-        }
-        reported = status.stages.length;
-        if (FINISHED.has(status.status)) {
-            return status;
-        }
-        await sleep(pollMs, signal);
+    const status = await getJob(job.status_url, { fetchImpl, signal });
+    for (const stage of status.stages.slice(seen)) {
+        onStage(stage);
     }
+    if (FINISHED.has(status.status)) {
+        return status;
+    }
+    await sleep(pollMs, signal);
+    return pollJob(job, onStage, { fetchImpl, pollMs, signal, seen: status.stages.length });
 }
 
 /** Follow the server-sent events of a job; resolves with the number of stages seen once the server says "done". */

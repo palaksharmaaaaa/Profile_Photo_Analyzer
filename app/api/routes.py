@@ -186,7 +186,6 @@ def _find_job(job_id: str) -> Job:
 @v1.post(
     "/jobs",
     status_code=status.HTTP_202_ACCEPTED,
-    response_model=JobCreated,
     responses=ERROR_RESPONSES,
     summary="Start an analysis and follow it with the returned links",
 )
@@ -210,9 +209,7 @@ def create_job(file: Annotated[UploadFile, File()], annotated_image: AnnotatedQu
     )
 
 
-@v1.get(
-    "/jobs/{job_id}", response_model=JobStatus, responses=ERROR_RESPONSES, summary="State, stages and result of a job"
-)
+@v1.get("/jobs/{job_id}", responses=ERROR_RESPONSES, summary="State, stages and result of a job")
 def get_job(job_id: str) -> JobStatus:
     return _job_status(_find_job(job_id))
 
@@ -248,7 +245,7 @@ async def job_events(job_id: str) -> StreamingResponse:
     )
 
 
-@v1.get("/limits", response_model=Limits, summary="What the service accepts")
+@v1.get("/limits", summary="What the service accepts")
 def limits() -> Limits:
     upload = settings.upload
     return Limits(

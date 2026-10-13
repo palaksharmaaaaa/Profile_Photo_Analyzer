@@ -41,7 +41,7 @@
                         <path d="M8 34l10-9 7 6 6-5 9 8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
                     </svg>
                 </span>
-                <img class="upload-thumb hidden" id="drop-preview" alt="Selected photo">
+                <img class="upload-thumb hidden" id="drop-preview" alt="Preview of the chosen file">
                 <span class="upload-title" id="upload-title-text">Drop a photo here, or <span class="link">browse</span></span>
                 <span class="upload-hint" id="upload-hint">JPG, PNG, WEBP, GIF, TIFF or BMP &middot; checked by file contents</span>
             </label>
@@ -83,7 +83,7 @@
             <p class="subtitle">Checking the image, finding and verifying faces, estimating age and gender. This takes a few seconds.</p>
         </div>
         <div class="stage">
-            <img id="loading-preview" alt="Photo being analyzed">
+            <img id="loading-preview" alt="Preview of the file being analysed">
             <div class="scan-laser"></div>
         </div>
     </section>
@@ -98,14 +98,14 @@
             <figure class="card media-card">
                 <figcaption class="card-label">Your photo</figcaption>
                 <div class="stage">
-                    <img id="original-image" alt="Uploaded photo">
+                    <img id="original-image" alt="The file you uploaded">
                     <div class="overlay" id="overlay"></div>
                 </div>
                 <p class="card-hint" id="filename"></p>
             </figure>
             <figure class="card media-card">
                 <figcaption class="card-label">Annotated by the analyzer</figcaption>
-                <div class="stage"><img id="annotated-image" alt="Photo with detected faces outlined"></div>
+                <div class="stage"><img id="annotated-image" alt="Detected faces outlined"></div>
                 <p class="card-hint" id="legend"></p>
             </figure>
         </div>
@@ -151,7 +151,10 @@
         <details class="technical">
             <summary><span>Technical details</span><span class="chip" id="timing">0 ms</span></summary>
             <div class="technical-body">
-                <table><tbody id="technical-rows"></tbody></table>
+                <table>
+                    <thead class="sr-only"><tr><th scope="col">Item</th><th scope="col">Value</th></tr></thead>
+                    <tbody id="technical-rows"></tbody>
+                </table>
             </div>
         </details>
 

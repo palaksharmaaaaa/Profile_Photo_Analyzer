@@ -274,7 +274,7 @@ describe("technical details and the whole result", () => {
         renderResult(data, "blob:photo");
         assert.equal($("original-image").getAttribute("src"), "blob:photo");
         assert.equal($("annotated-image").getAttribute("src"), data.annotated_image);
-        assert.equal($("annotated-image").alt, "Photo with detected faces outlined");
+        assert.equal($("annotated-image").alt, "Detected faces outlined");
         assert.equal($("filename").textContent, "p.jpg");
         assert.equal($("overlay").children.length, 3);
         assert.deepEqual([1, 2, 3, 4].map(stepPill), ["Completed", "Completed", "Completed", "Completed"]);
@@ -285,7 +285,7 @@ describe("technical details and the whole result", () => {
         data.annotated_image = null;
         renderResult(data, "blob:photo");
         assert.equal($("annotated-image").getAttribute("src"), "blob:photo");
-        assert.equal($("annotated-image").alt, "Photo (annotation was left out)");
+        assert.equal($("annotated-image").alt, "The upload, without annotation");
         assert.equal($("overlay").children.length, 0);
         Object.defineProperty($("original-image"), "complete", { value: false, configurable: true });
         giveSize($("original-image"));

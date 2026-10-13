@@ -175,7 +175,7 @@ export function init(overrides = {}) {
         if (!state.result) {
             return;
         }
-        const { annotated_image: _omitted, ...report } = state.result;
+        const report = Object.fromEntries(Object.entries(state.result).filter(([key]) => key !== "annotated_image"));
         const url = deps.createObjectUrl(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
         download(url, downloadName("photo-analysis", "json"));
         deps.revokeObjectUrl(url);
@@ -196,6 +196,6 @@ export function init(overrides = {}) {
     // Keep the boxes aligned with the photo whenever its displayed size changes (window resize, panel shown, ...).
     new deps.ResizeObserverImpl(() => state.result && drawOverlay(state.result)).observe($("original-image"));
 
-    loadLimits();
+    void loadLimits(); // it handles its own failures
     return { state, analyseChosenPhoto, reset, loadLimits };
 }

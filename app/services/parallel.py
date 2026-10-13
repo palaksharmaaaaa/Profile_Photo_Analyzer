@@ -50,11 +50,11 @@ def run_all[T](tasks: Sequence[Callable[[], T]]) -> list[T]:
         return [task() for task in tasks]
     futures = [_get_pool().submit(_in_worker, task) for task in tasks]
     results: list[T] = []
-    first_error: BaseException | None = None
+    first_error: Exception | None = None
     for future in futures:
         try:
             results.append(future.result())
-        except BaseException as exc:  # noqa: BLE001 - re-raised below after every task has finished
+        except Exception as exc:  # re-raised below after every task has finished
             first_error = first_error or exc
     if first_error is not None:
         raise first_error

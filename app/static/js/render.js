@@ -247,7 +247,7 @@ export function renderResult(data, photoUrl) {
     original.src = photoUrl;
     const annotated = $("annotated-image");
     annotated.src = data.annotated_image ?? photoUrl;
-    annotated.alt = data.annotated_image ? "Photo with detected faces outlined" : "Photo (annotation was left out)";
+    annotated.alt = data.annotated_image ? "Detected faces outlined" : "The upload, without annotation";
     setText("filename", data.filename);
     setText("legend", data.legend);
     setText("disclaimer", data.disclaimer);

@@ -1,12 +1,16 @@
 [run]
 branch = True
-source =
-    app
-    evaluation
-    scripts
+relative_files = True
+source = .
 omit =
     tests/*
     .venv/*
+    node_modules/*
+    models/*
+    .eval_data/*
+    .model_build/*
+    coverage-js/*
+    eslint.config.js
 
 [report]
 show_missing = True
