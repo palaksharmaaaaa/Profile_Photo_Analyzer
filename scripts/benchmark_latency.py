@@ -1,11 +1,11 @@
 """
 Measure CPU latency of each pipeline stage and of the whole analysis on one image.
 
-    python scripts/benchmark_latency.py --image path/to/portrait.jpg [--iterations 15] [--sequential] [--json out.json]
+    python scripts/benchmark_latency.py --image path/to/portrait.jpg [--iterations 15] [--parallel] [--json out.json]
 
 Use a real portrait: with a synthetic image the face-dependent stages (verification, age/gender) never run
-and would not be measured. ``--sequential`` turns parallel inference off, to measure what running the detectors and
-the age views at the same time gains. Results depend entirely on the machine; nothing here is a guarantee.
+and would not be measured. ``--parallel`` turns parallel inference on (it is off by default), to measure what running the detectors and
+the age views at the same time gains or costs. Results depend entirely on the machine; nothing here is a guarantee.
 """
 
 from __future__ import annotations
@@ -93,12 +93,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--iterations", type=int, default=15)
-    parser.add_argument("--sequential", action="store_true", help="turn parallel inference off")
+    parser.add_argument("--parallel", action="store_true", help="turn parallel inference on")
     parser.add_argument("--json", type=Path)
     args = parser.parse_args(argv)
 
-    if args.sequential:
-        settings.models.parallel_inference = False
+    if args.parallel:
+        settings.models.parallel_inference = True
     report = measure(args.image.read_bytes(), args.iterations)
     text = json.dumps(report, indent=2)
     print(text)

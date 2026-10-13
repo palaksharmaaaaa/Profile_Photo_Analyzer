@@ -117,7 +117,9 @@ class ModelSettings(BaseModel):
     ort_threads: int = 0  # threads per model; 0 means min(4, CPU cores)
     download_timeout_seconds: int = 60
     warm_up_on_start: bool = True  # run one tiny inference per model at start-up so the first request is not slow
-    parallel_inference: bool = True  # independent detectors and age views run at the same time
+    # Independent detectors and age views run at the same time. Off by default: measured on a 14-thread CPU it made the
+    # whole analysis slower (3.6 s against 2.7 s) because the models compete for cores; try it with fewer ort_threads.
+    parallel_inference: bool = False
     inference_workers: int = 4  # size of the shared pool behind ``parallel_inference``
 
 

@@ -94,7 +94,9 @@ def verdict(probs):
 def test_verdict_human_requires_probability_and_margin():
     assert verdict(face_probs(real_human=0.9, painting=0.1))["verdict"] == cs.VERDICT_HUMAN
     assert verdict(face_probs(real_human=0.72, painting=0.20, cartoon=0.08))["verdict"] == cs.VERDICT_HUMAN
-    assert verdict(face_probs(real_human=0.68, painting=0.25, cartoon=0.07))["verdict"] == cs.VERDICT_UNSURE  # below 0.70
+    assert (
+        verdict(face_probs(real_human=0.68, painting=0.25, cartoon=0.07))["verdict"] == cs.VERDICT_UNSURE
+    )  # below 0.70
     assert verdict(face_probs(real_human=0.5, painting=0.4, cartoon=0.1))["verdict"] == cs.VERDICT_UNSURE
     assert verdict(face_probs(real_human=0.5, painting=0.2, cartoon=0.3))["verdict"] == cs.VERDICT_UNSURE
 

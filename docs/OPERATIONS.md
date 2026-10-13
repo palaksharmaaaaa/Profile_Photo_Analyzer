@@ -66,8 +66,8 @@ Inference is CPU bound: one analysis takes a few seconds and uses several cores.
 
 * **In one process.** `POST /v1/analyze-profile-photo` is synchronous. `POST /v1/jobs` queues the work on a bounded pool
   (`jobs.workers` running, `jobs.queue_size` waiting); beyond that it answers `503 queue_full` with `Retry-After`, so a
-  burst can never pile up. Independent detectors and the three age views run at the same time (`models.parallel_inference`);
-  `scripts/benchmark_latency.py --sequential` measures what that gains on your machine.
+  burst can never pile up. Independent detectors and the three age views can run at the same time (`models.parallel_inference`, off by default because it measured slower on a 14-thread CPU, where the models compete for cores);
+  `scripts/benchmark_latency.py --parallel` measures what it does on your machine.
 * **Across processes or machines.** Job state and the rate limiter are per process. Run several instances behind a load
   balancer, send a client's follow-up requests (`GET /v1/jobs/{id}`, the event stream) to the instance that created the
   job, and rate limit at the edge: `deploy/nginx.conf` does that (with the in-process limiter switched off via

@@ -147,6 +147,12 @@ def test_stage_events_know_their_number_and_title():
 # ---- parallel execution --------------------------------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _parallel_inference_on(monkeypatch):
+    """Parallel inference is off by default; these tests are about the case where it is on."""
+    monkeypatch.setattr(settings.models, "parallel_inference", True)
+
+
 def test_tasks_run_concurrently_and_come_back_in_order():
     barrier = threading.Barrier(2, timeout=5)
 

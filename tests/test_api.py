@@ -167,6 +167,19 @@ def test_lifespan_warms_the_models_up_and_cleans_up():
             assert probe.get("/ready").json()["models"] == report
 
 
+def test_a_failing_warm_up_makes_the_service_not_ready_instead_of_forever_warming(capsys):
+    with patch("app.main.warm_up", side_effect=RuntimeError("no models")):
+        with TestClient(create_app()) as probe:
+            for _ in range(100):
+                if probe.get("/ready").json()["status"] != "warming_up":
+                    break
+                time.sleep(0.05)
+            body = probe.get("/ready")
+    assert body.status_code == 503
+    assert body.json()["status"] == "not_ready"
+    assert "The warm-up failed" in capsys.readouterr().err
+
+
 def test_lifespan_can_skip_the_warm_up(monkeypatch):
     monkeypatch.setattr(settings.models, "warm_up_on_start", False)
     with patch("app.main.warm_up") as warm:
@@ -394,6 +407,16 @@ def test_api_key_authentication(stub_analysis, monkeypatch):
     assert client.get("/ready").status_code in (200, 503)  # public
     assert_error(client.get("/metrics"), 401, "unauthorized")
     assert client.get("/metrics", headers={"X-API-Key": "secret-test-token"}).status_code == 200
+
+
+def test_cors_preflight_needs_no_api_key_and_uses_no_rate_limit(monkeypatch):
+    monkeypatch.setattr(settings.security, "api_key", "secret-test-token")
+    monkeypatch.setattr(settings.security, "rate_limit_per_minute", 1)
+    headers = {"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST"}
+    for _ in range(3):
+        response = client.options("/v1/analyze-profile-photo", headers=headers)
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
 def test_rate_limiting(stub_analysis, monkeypatch):

@@ -97,7 +97,7 @@ def test_measure_times_every_stage_on_a_portrait(test_image_bytes):
     assert len(report["latency_ms"]) == 7
     assert "END-TO-END" in report["latency_ms"]
     assert report["environment"]["iterations"] == 2
-    assert report["environment"]["parallel_inference"] is True
+    assert report["environment"]["parallel_inference"] is False
 
 
 def test_measure_refuses_an_image_without_a_face(test_image_bytes):
@@ -112,19 +112,18 @@ def test_benchmark_command_line(test_image_bytes, tmp_path, monkeypatch, capsys)
     image = tmp_path / "p.jpg"
     image.write_bytes(test_image_bytes)
     out = tmp_path / "report.json"
-    monkeypatch.setattr(settings.models, "parallel_inference", True)
+    monkeypatch.setattr(settings.models, "parallel_inference", False)
     with patch.object(benchmark_latency, "measure", return_value={"environment": {}, "latency_ms": {}}) as measure:
         assert (
-            benchmark_latency.main(["--image", str(image), "--iterations", "3", "--sequential", "--json", str(out)])
-            == 0
+            benchmark_latency.main(["--image", str(image), "--iterations", "3", "--parallel", "--json", str(out)]) == 0
         )
-        assert settings.models.parallel_inference is False
+        assert settings.models.parallel_inference is True
         assert benchmark_latency.main(["--image", str(image)]) == 0
     assert measure.call_args_list[0].args[1] == 3
     assert measure.call_args_list[1].args[1] == 15
     assert json.loads(out.read_text(encoding="utf-8")) == {"environment": {}, "latency_ms": {}}
     assert '"latency_ms"' in capsys.readouterr().out
-    monkeypatch.setattr(settings.models, "parallel_inference", True)
+    monkeypatch.setattr(settings.models, "parallel_inference", False)
 
 
 # ---- fetch_eval_data --------------------------------------------------------------------------------------------------------

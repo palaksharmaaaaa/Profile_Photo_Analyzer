@@ -1,0 +1,14 @@
+{
+  "portraits.detection.errors": {"max": 0},
+  "portraits.detection.at_least_one_human_rate": {"min": 0.93},
+  "portraits.gender.ALL.accuracy_when_answered": {"min": 0.96},
+  "portraits.age.inside_labelled_bin_rate": {"min": 0.55},
+  "portraits.age.mean_error_years_if_ages_uniform_in_bin": {"max": 6.5},
+  "portraits.minor.minor_recall_labelled_0_to_9": {"min": 0.95},
+  "portraits.minor.false_flag_rate_labelled_30_plus": {"max": 0.08},
+  "not_human.ALL.reported_as_real_human_rate": {"max": 0.04},
+  "not_human.ALL.passed_the_whole_policy_rate": {"max": 0.015},
+  "not_human.pets.reported_as_real_human_rate": {"max": 0.01},
+  "not_human.birds.reported_as_real_human_rate": {"max": 0.01},
+  "not_human.anime.reported_as_real_human_rate": {"max": 0.01}
+}

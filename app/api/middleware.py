@@ -81,8 +81,8 @@ class SecurityMiddleware:
     def _refusal(self, scope: Scope, headers: Headers, extra: dict[str, str]) -> JSONResponse | None:
         """The response that stops this request before it reaches the application, if there is one."""
         path = scope["path"]
-        if path in PUBLIC_PATHS or path.startswith(STATIC_PREFIX):
-            return None
+        if scope["method"] == "OPTIONS" or path in PUBLIC_PATHS or path.startswith(STATIC_PREFIX):
+            return None  # a browser sends CORS preflight requests without credentials
         if settings.security.api_key and not _api_key_is_valid(headers):
             return error_response(401, ErrorCode.UNAUTHORIZED, "Unauthorized: invalid or missing API key.")
 

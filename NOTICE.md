@@ -23,8 +23,8 @@ Upstream files used by `scripts/build_models.py` are pinned by SHA-256 in that s
 The previous revision avoided non-commercial weights. This revision uses the strongest models found regardless of
 licence, so **it is not cleared for commercial deployment**. To make it so, any of the following works:
 
-1. Obtain a commercial licence from InsightFace for the SCRFD weights, or switch the primary detector back to YuNet
-   (MIT), accepting lower recall on small and profile faces.
+1. Obtain a commercial licence from InsightFace for the SCRFD weights, or leave it out with
+   `PPA_DETECTION__ENABLE_SCRFD=false` (YuNet, MIT, remains), accepting lower recall on small and profile faces.
 2. Obtain written clarification of the MiVOLO v2 training data from its authors.
 3. Have counsel review the dataset terms behind every model (WIDER FACE, UTKFace, IMDB-WIKI, LAION, FairFace).
 
@@ -32,6 +32,14 @@ licence, so **it is not cleared for commercial deployment**. To make it so, any 
 
 Estimating age and gender from a face is biometric-adjacent processing. Depending on jurisdiction (GDPR, BIPA, state
 privacy laws) it may require a lawful basis, notice or consent. The service processes uploads in memory, does not store
-them and sends nothing to external services, but it returns the image back to the caller as data URLs. Accuracy differs
-across demographic groups for models of this kind; this repository has not measured it (see
-`docs/EVALUATION_AND_FAIRNESS.md`). Do not use the output for decisions about individuals without human review.
+them and sends nothing to external services; the response contains only the annotated copy (which can be left out with
+`?annotated_image=false`), never the original. Accuracy differs across demographic groups for models of this kind; the
+per-group measurements that exist are in `docs/EVALUATION_AND_FAIRNESS.md`, and they are not a clearance. Do not use the
+output for decisions about individuals without human review.
+
+## Evaluation data
+
+`scripts/fetch_eval_data.py` downloads labelled images into the git-ignored `.eval_data/` folder for measuring the
+service. Nothing from these datasets is stored in or redistributed by this repository. Each keeps its own licence, which
+you must check before using the images for anything other than evaluating this service: FairFace (CC BY 4.0), the
+Oxford-IIIT Pets, Caltech-UCSD Birds-200-2011, WikiArt, anime-face, cartoon-face and face-sketch datasets on Hugging Face.

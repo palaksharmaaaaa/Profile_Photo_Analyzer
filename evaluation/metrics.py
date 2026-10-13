@@ -116,10 +116,20 @@ def gender_report(pairs: list[tuple[Row, Row]]) -> dict[str, Any]:
     def summarise(items: list[tuple[Row, Row]]) -> dict[str, Any]:
         answered = [(face, label) for face, label in items if face["gender"] in ("Male", "Female")]
         correct = sum(face["gender"] == label["gender"] for face, label in answered)
+        children = [(face, label) for face, label in items if label["age"] in MINOR_BINS]
+        adults = [(face, label) for face, label in items if label["age"] in ("20-29", *ADULT_BINS)]
         return {
             "faces": len(items),
             "accuracy_when_answered": ratio(correct, len(answered)),
             "unsure_rate": ratio(len(items) - len(answered), len(items)),
+            "unsure_rate_labelled_0_to_9": ratio(
+                sum(face["gender"] == "Unsure" for face, _ in children), len(children)
+            ),
+            "unsure_rate_labelled_20_plus": ratio(sum(face["gender"] == "Unsure" for face, _ in adults), len(adults)),
+            # Unsure without any score: the face was kept away from the model (too small, turned away, ...)
+            "unsure_without_a_score_rate": ratio(
+                sum(face["gender"] == "Unsure" and face["gender_confidence"] is None for face, _ in items), len(items)
+            ),
         }
 
     return {group: summarise(items) for group, items in sorted(groups.items())}
@@ -178,6 +188,27 @@ def _bin_spread(name: str, estimates: list[float]) -> dict[str, Any]:
         "bias_years": round(statistics.fmean(differences), 2),
         "model_spread_years": round(math.sqrt(max(0.0, variance - width**2 / 12)), 2),
     }
+
+
+def age_by_group(pairs: list[tuple[Row, Row]], threshold: float) -> dict[str, dict[str, Any]]:
+    """Age measures per race group (the FairFace label), so large gaps between groups are visible."""
+    groups: dict[str, list[tuple[Row, Row]]] = defaultdict(list)
+    for row, label in pairs:
+        groups["ALL"].append((row, label))
+        groups[label["race"]].append((row, label))
+    report = {}
+    for name, items in sorted(groups.items()):
+        age = age_report(items)
+        minors = minor_report(items, threshold)
+        report[name] = {
+            "faces": age["faces"],
+            "unsure_rate": age["unsure_rate"],
+            "inside_labelled_bin_rate": age["inside_labelled_bin_rate"],
+            "mean_error_to_bin_years_lower_bound": age["mean_error_to_bin_years_lower_bound"],
+            "minor_recall_labelled_0_to_9": minors["minor_recall_labelled_0_to_9"],
+            "false_flag_rate_labelled_30_plus": minors["false_flag_rate_labelled_30_plus"],
+        }
+    return report
 
 
 def _differences(by_bin: dict[str, list[float]], names: Iterable[str]) -> tuple[list[float], float]:
@@ -337,6 +368,7 @@ def build_report(rows: list[Row], labels: dict[str, Row], minor_threshold: float
             "gender": gender_report(humans),
             "age": age_report(humans),
             "minor": minor_report(humans, minor_threshold),
+            "age_by_race": age_by_group(humans, minor_threshold),
         },
         "not_human": not_human_report(not_humans),
         "speed_ms": _speed(rows),
@@ -348,6 +380,14 @@ def _speed(rows: list[Row]) -> dict[str, float | None]:
     if not times:
         return {"p50": None, "p90": None}
     return {"p50": times[len(times) // 2], "p90": times[min(len(times) - 1, int(len(times) * 0.9))]}
+
+
+def run_info(rows: list[Row], labels: dict[str, Row], run_settings: dict[str, Any], date: str) -> dict[str, Any]:
+    """What the report is about: when it ran, how many images of each set, and the settings in force."""
+    per_set: dict[str, int] = defaultdict(int)
+    for row in rows:
+        per_set[labels[row["file"]]["set"]] += 1
+    return {"date": date, "images_per_set": dict(per_set), "settings": run_settings}
 
 
 def lookup(report: dict[str, Any], path: str) -> Any:

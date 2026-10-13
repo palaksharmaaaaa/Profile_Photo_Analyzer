@@ -95,6 +95,9 @@ def test_gender_report_by_group():
     assert report["ALL"]["accuracy_when_answered"] == pytest.approx(0.6667, abs=1e-4)
     assert report["ALL"]["unsure_rate"] == 0.25
     assert report["White"] == report["ALL"]
+    assert report["ALL"]["unsure_rate_labelled_20_plus"] == 0.25  # the Unsure face is labelled 20-29
+    assert report["ALL"]["unsure_rate_labelled_0_to_9"] is None  # no child in this set
+    assert report["ALL"]["unsure_without_a_score_rate"] == 0.0  # the Unsure face still has a model score
 
 
 def test_age_report_separates_a_lower_bound_from_an_assumption():
@@ -161,6 +164,21 @@ def test_minor_report_uses_the_unambiguous_bins_only():
     assert report["false_flag_rate_labelled_30_plus"] == 0.5
     assert report["flag_rate_labelled_10_to_19"] == 1.0
     assert (report["minors_scored"], report["adults_scored"]) == (2, 2)
+
+
+def test_age_is_reported_per_race_group():
+    pairs = [
+        (row("a", [face(age=25)]), label("a", age="20-29", race="White")),
+        (row("b", [face(age=40, p_under_18=0.5)]), label("b", age="3-9", race="Black")),
+        (row("c", [face(age=34)]), label("c", age="20-29", race="Black")),
+    ]
+    report = metrics.age_by_group(pairs, 0.1)
+    assert list(report) == ["ALL", "Black", "White"]
+    assert report["ALL"]["faces"] == 3
+    assert report["White"]["inside_labelled_bin_rate"] == 1.0
+    assert report["Black"]["inside_labelled_bin_rate"] == 0.0
+    assert report["Black"]["minor_recall_labelled_0_to_9"] == 1.0
+    assert report["White"]["minor_recall_labelled_0_to_9"] is None
 
 
 def test_minor_sweep_reports_every_threshold():
@@ -403,3 +421,150 @@ def test_command_line_runs_reports_and_checks_gates(tmp_path, capsys):
     assert evaluate.main(["--data", str(data), "--skip-run", "--gates", str(gates)]) == 1
     assert "GATE FAILED" in capsys.readouterr().out
     assert evaluate.main(["--data", str(data), "--skip-run", "--minor-threshold", "0.3"]) == 0
+
+
+# ---- the generated tables of the evaluation document ---------------------------------------------------------------------
+
+
+def sample_report():
+    rows = [
+        row("a", [face("Male", 25)], candidates=[candidate(0.8, 0.5)]),
+        row("b", [face("Female", 34)], candidates=[candidate(0.65, 0.4)]),
+        row("c", [], others=1, status="ONLY_NON_HUMAN_FACES", candidates=[candidate(0.2, 0.5, best_is_human=False)]),
+    ]
+    labels = {
+        "a": label("a", age="20-29"),
+        "b": label("b", age="3-9", gender="Male"),
+        "c": label("c", "not_human", "pets"),
+    }
+    report = metrics.build_report(rows, labels, 0.1)
+    report["run"] = metrics.run_info(
+        rows,
+        labels,
+        {"human_min_prob": 0.7, "human_min_margin": 0.25, "minor_risk_probability": 0.1, "enable_scrfd": False},
+        "2026-10-13",
+    )
+    report["thresholds"] = metrics.threshold_sweep(
+        metrics.human_set(rows, labels), metrics.not_human_set(rows, labels), [0.5, 0.6, 0.7], [0.25]
+    )
+    report["minor_thresholds"] = metrics.minor_sweep(metrics.human_set(rows, labels), [0.1, 0.5])
+    return report
+
+
+def test_run_info_counts_the_images_of_each_set():
+    info = sample_report()["run"]
+    assert info["images_per_set"] == {"fairface": 2, "pets": 1}
+    assert info["date"] == "2026-10-13"
+
+
+def test_every_section_of_the_document_is_generated_from_the_report():
+    from evaluation import render
+
+    text = render.render(sample_report())
+    assert "Run of 2026-10-13. Images: fairface 2, pets 1." in text
+    assert "SCRFD off" in text
+    assert "| At least one real human face found | 100.0 % |" in text
+    assert "| ALL | 1 | 0.0 % | 0.0 % | 100.0 % | 0.0 % | 0.0 % |" in text
+    assert "`human_min_prob`" in text
+    assert "0.7 (used)" in text
+    assert "0.5 |" in text and "0.6 |" in text
+    assert "#### Age by race group" in text
+    assert "| Group | Faces | Age Unsure |" in text
+    assert "Faces scored: 1 labelled 0-9, 0 labelled 30 or older." in text
+    assert "| any |" in text
+    assert "median 100 ms and 90th percentile 100 ms" in text
+    assert "n/a" in text  # no adult was scored, so that rate is not available
+    assert "| Set | Images |" in text
+
+
+def test_numbers_and_percentages_have_a_not_available_form():
+    from evaluation import render
+
+    assert render.percent(None) == "n/a"
+    assert render.percent(0.1234) == "12.3 %"
+    assert render.percent(0.1234, 0) == "12 %"
+    assert render.number(None) == "n/a"
+    assert render.number(1.236) == "1.24"
+
+
+def test_only_the_text_between_the_markers_is_replaced():
+    from evaluation import render
+
+    document = f"intro\n{render.START_MARKER}\nold numbers\n{render.END_MARKER}\noutro\n"
+    updated = render.replace_between_markers(document, "NEW")
+    assert updated == f"intro\n{render.START_MARKER}\n\nNEW\n\n{render.END_MARKER}\noutro\n"
+    assert render.replace_between_markers(updated, "NEWER").count("NEWER") == 1
+    with pytest.raises(ValueError):
+        render.replace_between_markers("no markers here", "x")
+
+
+def test_render_script_updates_the_document(tmp_path, capsys):
+    from evaluation import render
+
+    render_script = __import__("render_evaluation")
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps(sample_report()), encoding="utf-8")
+    doc = tmp_path / "doc.md"
+    doc.write_text(
+        f"hand written\n{render.START_MARKER}\nSTALE-NUMBERS\n{render.END_MARKER}\nmore hand written\n",
+        encoding="utf-8",
+    )
+    assert render_script.main(["--report", str(report), "--doc", str(doc)]) == 0
+    text = doc.read_text(encoding="utf-8")
+    assert text.startswith("hand written") and text.rstrip().endswith("more hand written")
+    assert "Run of 2026-10-13" in text
+    assert "STALE-NUMBERS" not in text
+    assert "updated" in capsys.readouterr().out
+
+
+def benchmark_output(p50):
+    stage = {"min": 1, "mean": 2, "p50": p50, "p90": p50 + 5, "max": 99}
+    return {
+        "environment": {
+            "python": "3.14.5", "onnxruntime": "1.31.0", "logical_cpus": 14, "onnx_threads_per_model": "min(4, cores)",
+            "analysed_resolution": [178, 218], "iterations": 5,
+        },
+        "latency_ms": {"face detection": stage, "END-TO-END": {**stage, "p50": p50 * 2}},
+    }  # fmt: skip
+
+
+def test_the_speed_table_compares_parallel_and_sequential_runs(tmp_path, capsys):
+    from evaluation import render
+
+    text = render.render_benchmark(benchmark_output(100), benchmark_output(250))
+    assert "14 logical CPUs" in text
+    assert "178 x 218 px" in text
+    assert "| face detection | 250 | 255 | 100 | 105 |" in text
+    assert "| END-TO-END | 500 | 255 | 200 | 105 |" in text
+
+    render_script = __import__("render_evaluation")
+    doc = tmp_path / "doc.md"
+    doc.write_text(
+        f"a\n{render.BENCHMARK_START_MARKER}\nSTALE-SPEED\n{render.BENCHMARK_END_MARKER}\nb\n", encoding="utf-8"
+    )
+    parallel, sequential = tmp_path / "p.json", tmp_path / "s.json"
+    parallel.write_text(json.dumps(benchmark_output(100)), encoding="utf-8")
+    sequential.write_text(json.dumps(benchmark_output(250)), encoding="utf-8")
+    argv = ["--report", str(tmp_path / "no-report.json"), "--doc", str(doc)]
+    assert (
+        render_script.main([*argv, "--benchmark-parallel", str(parallel), "--benchmark-sequential", str(sequential)])
+        == 0
+    )
+    assert "STALE-SPEED" not in doc.read_text(encoding="utf-8")
+    assert "| face detection | 250 |" in doc.read_text(encoding="utf-8")
+    capsys.readouterr()
+
+
+def test_the_shipped_gates_are_well_formed_and_name_things_a_report_contains():
+    gates = json.loads((ROOT / "evaluation" / "gates.json").read_text(encoding="utf-8"))
+    assert gates
+    for path, limits in gates.items():
+        assert limits.keys() <= {"min", "max"} and limits, path
+        assert all(isinstance(value, int | float) for value in limits.values()), path
+
+    rows = [row("a", [face()])] + [row(name, [], others=1) for name in ("pets", "birds", "anime")]
+    labels = {"a": label("a")} | {name: label(name, "not_human", name) for name in ("pets", "birds", "anime")}
+    report = metrics.build_report(rows, labels, 0.1)
+    for path in gates:
+        metrics.lookup(report, path)  # raises when the report has no such value
+    assert metrics.check_gates(report, gates) != []  # one portrait and no minors: some limits cannot be met

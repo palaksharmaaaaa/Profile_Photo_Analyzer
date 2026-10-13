@@ -31,7 +31,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.models.warm_up_on_start:
 
         async def run_warm_up() -> None:
-            app.state.warm_up = await asyncio.to_thread(warm_up)
+            try:
+                app.state.warm_up = await asyncio.to_thread(warm_up)
+            except Exception:
+                logger.exception("The warm-up failed")
+                app.state.warm_up = {"warm_up": {"loaded": False, "warm_up_ms": None, "providers": []}}
+                return
             logger.info("Models warmed up: %s", {key: entry["warm_up_ms"] for key, entry in app.state.warm_up.items()})
 
         task = asyncio.create_task(run_warm_up())

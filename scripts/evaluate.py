@@ -10,6 +10,7 @@ a report or threshold sweep can be recomputed without running the models again.
 """
 
 import argparse
+import datetime
 import json
 import sys
 from pathlib import Path
@@ -44,6 +45,17 @@ def main(argv: list[str] | None = None) -> int:
         rows = runner.run_folder(args.data, results_path, args.workers, args.threads, args.limit_per_set, args.sets)
 
     report = metrics.build_report(rows, labels, args.minor_threshold or settings.age.minor_risk_probability)
+    report["run"] = metrics.run_info(
+        rows,
+        labels,
+        {
+            "human_min_prob": settings.verification.human_min_prob,
+            "human_min_margin": settings.verification.human_min_margin,
+            "minor_risk_probability": settings.age.minor_risk_probability,
+            "enable_scrfd": settings.detection.enable_scrfd,
+        },
+        datetime.date.today().isoformat(),
+    )
     report["thresholds"] = metrics.threshold_sweep(
         metrics.human_set(rows, labels),
         metrics.not_human_set(rows, labels),
@@ -56,7 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(
         json.dumps(
-            {key: value for key, value in report.items() if key not in ("thresholds", "minor_thresholds")}, indent=2
+            {key: value for key, value in report.items() if key not in ("thresholds", "minor_thresholds", "run")},
+            indent=2,
         )
     )
     best = metrics.best_threshold(report["thresholds"], max_false_rate=0.01)
