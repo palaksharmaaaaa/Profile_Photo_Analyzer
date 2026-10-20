@@ -10,7 +10,7 @@
 # -e PPA_DETECTION__ENABLE_SCRFD=false, MiVOLO has no permissive replacement here.
 
 # ---- Stage 1: build the models ----------------------------------------------------------------------------
-FROM python:3.14-slim AS models
+FROM python:3.15-slim AS models
 
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
@@ -23,7 +23,7 @@ COPY scripts/build_models.py scripts/fetch_models.py ./scripts/
 RUN python scripts/build_models.py --cleanup && python scripts/fetch_models.py
 
 # ---- Stage 2: the runtime image ------------------------------------------------------------------------------
-FROM python:3.14-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
